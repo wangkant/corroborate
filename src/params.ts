@@ -21,6 +21,8 @@ export const FIXED = {
   daily_release_quota: 10,
   activate_min_golds: 6,
   activate_min_accuracy_pct: 80,
+  activate_alt_accepted: 3,
+  activate_alt_golds: 3,
   suspend_after_bad_golds: 4,
   registrations_per_net_day: 5,
   registrations_per_hour: 200,

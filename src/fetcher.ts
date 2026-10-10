@@ -70,6 +70,8 @@ export async function fetchPage(raw: string, userAgent: string, timeoutMs = TIME
     if (length > MAX_BYTES) throw new FetchError(`source page is larger than ${MAX_BYTES / 1_000_000} MB`);
     const body = await readCapped(res);
     const page = type === "text/plain" ? { title: "", text: clean(body) } : await htmlToText(body);
+    // D1 rows top out at 2 MB, and snapshots are stored whole.
+    if (page.text.length > 1_200_000) throw new FetchError("page text is too long to snapshot; cite a shorter page or section");
     const title = page.title || (direct !== url.toString() ? decodeURIComponent(url.pathname.slice(6)).replace(/_/g, " ") : "");
     return { finalUrl: canonicalUrl(url), title: clean(title).slice(0, 300), text: page.text };
   }
@@ -100,7 +102,8 @@ async function readCapped(res: Response): Promise<string> {
 
 // Citation markers and edit links are page furniture that agents never copy into quotes.
 const SKIP =
-  "script,style,noscript,template,svg,iframe,object,head,sup.reference,span.mw-editsection,.mw-cite-backlink,.noprint,.navbox,.reflist,ol.references,.metadata,.mw-empty-elt";
+  "script,style,noscript,template,svg,iframe,object,head,button,select,nav,footer,aside,[role=navigation],[role=contentinfo],[role=banner],[aria-hidden=true]," +
+  "sup.reference,span.mw-editsection,.mw-cite-backlink,.noprint,.navbox,.reflist,ol.references,.metadata,.mw-empty-elt";
 const BLOCK = "p,div,br,li,ul,ol,h1,h2,h3,h4,h5,h6,tr,td,th,section,article,header,footer,blockquote,pre,figcaption,dd,dt,table,main,aside,nav,caption";
 
 export async function htmlToText(html: string): Promise<{ title: string; text: string }> {
@@ -122,10 +125,14 @@ export async function htmlToText(html: string): Promise<{ title: string; text: s
     })
     .on(SKIP, {
       element(el) {
-        skip++;
-        el.onEndTag(() => {
-          skip--;
-        });
+        try {
+          el.onEndTag(() => {
+            skip--;
+          });
+          skip++;
+        } catch {
+          // Void elements (an aria-hidden <img>) have no end tag and no content to skip.
+        }
       },
     })
     .on(BLOCK, {

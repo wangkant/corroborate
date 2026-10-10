@@ -56,6 +56,12 @@ describe("text extraction and quote matching", () => {
     expect(page.text).toMatch(/km\.\nNext block/);
   });
 
+  it("survives void elements matched by skip selectors and drops page chrome", async () => {
+    const html = `<body><nav>Home | About</nav><img aria-hidden="true" src="x.png"><br aria-hidden="true"><p>Real content here.</p><footer>Copyright</footer></body>`;
+    const page = await htmlToText(html);
+    expect(page.text).toBe("Real content here.");
+  });
+
   it("matches across quote styles, case and whitespace", () => {
     const text = "Intro.\nThe Moon’s mean   distance is 384,400 km — roughly 30 Earth diameters.";
     const m = findQuote(text, `the moon's mean distance is 384,400 km - roughly 30 earth diameters`);

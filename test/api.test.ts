@@ -81,7 +81,7 @@ beforeEach(async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
-    if (url.startsWith("https://en.wikipedia.org/w/index.php?title=Moon&action=render")) return html(WIKI);
+    if (url.startsWith("https://en.wikipedia.org/w/index.php?title=")) return html(WIKI);
     if (url.startsWith("https://science.nasa.gov/moon")) return html(NASA);
     if (url.startsWith("https://blog.example/moon")) return html(NASA);
     if (url.startsWith("https://source.example/pdf")) return new Response("%PDF", { headers: { "content-type": "application/pdf" } });
@@ -169,8 +169,19 @@ describe("snapshots and the mechanical check", () => {
     expect((await post({ quote: "key sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaa" })).status).toBe(422);
     expect((await post({ quote: "completes one orbit around Earth in about 27.3 days" })).status).toBe(201);
     expect((await post({ quote: "completes one orbit around Earth in about 27.3 days" })).status).toBe(409);
-    expect((await post({ quote: "It recedes at 3.8 cm per year" })).status).toBe(201);
-    expect((await post({ quote: "mean distance from Earth is about 384,400 kilometres" })).status).toBe(409);
+    expect((await post({ quote: "It recedes at 3.8 cm per year" })).json.error).toMatch(/same page|from that page/);
+    expect((await submit(a.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Lunar_distance", "It recedes at 3.8 cm per year")).status).toBe(201);
+    const third = await submit(a.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Orbit_of_the_Moon", "It recedes at 3.8 cm per year");
+    expect(third.json.error).toMatch(/2 pieces of evidence from wikipedia\.org/);
+  });
+
+  it("finds numbers as substrings and explains empty searches", async () => {
+    const a = await register("192.0.2.5");
+    const num = await call("POST", "/api/snapshot", { token: a.token, body: { url: "https://en.wikipedia.org/wiki/Moon", find: "3.8" } });
+    expect(num.json.matches).toBe(1);
+    const none = await call("POST", "/api/snapshot", { token: a.token, body: { url: "https://en.wikipedia.org/wiki/Moon", find: "photosynthesis chlorophyll" } });
+    expect(none.json.matches).toBe(0);
+    expect(none.json.hint).toMatch(/fewer/);
   });
 
   it("marks non-primary sources as context", async () => {
@@ -190,8 +201,13 @@ describe("blind review, golds and reputation", () => {
     const inv = await seedInvestigation();
     const e1 = await submit(author.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Moon", "mean distance from Earth is about 384,400 kilometres");
     expect(e1.status).toBe(201);
-    expect((await call("GET", "/api/reviews/next", { token: neighbour.token })).json.assignment).toBeNull();
+    const blocked = await call("GET", "/api/reviews/next", { token: neighbour.token });
+    expect(blocked.json.assignment).toBeNull();
+    expect(blocked.json.reason).toMatch(/1 come from your network or owner/);
     expect((await call("GET", `/api/investigations/${inv.id}`)).json.claims[0].evidence).toHaveLength(0);
+    const pendingView = await call("GET", `/api/claims/${inv.claims[0]}`);
+    expect(pendingView.json.in_review).toEqual({ count: 1, source_domains: ["wikipedia.org"] });
+    expect(pendingView.json.evidence).toHaveLength(0);
 
     for (const r of [r1, r2]) expect(await reviewTarget(r, "384,400 kilometres", "yes")).toBe(true);
     let claim = await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<{ verdict: string }>();

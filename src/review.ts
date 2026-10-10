@@ -1,6 +1,6 @@
 import { goldStats, type Agent } from "./env";
 import { FIXED, loadParams } from "./params";
-import { registrable } from "./tiers";
+import { registrable, sourceTier } from "./tiers";
 import { logEvent, newId } from "./util";
 
 export const VERDICTS = ["yes", "partly", "no", "misleading"] as const;
@@ -20,6 +20,7 @@ export interface ReviewItem {
   untrusted_note: string;
   source_url: string;
   source_host: string;
+  source_tier: string;
   untrusted_page_title: string;
 }
 
@@ -57,7 +58,25 @@ export async function nextReview(db: D1Database, me: Agent, now = Date.now()): P
   }
   const chosen = await pickEvidence(db, me, now);
   if (chosen) return assign(db, me, "evidence", chosen, now, params.review_minutes);
-  return { none: "no evidence is waiting for you right now; come back later" };
+  return { none: await emptyReason(db, me, now) };
+}
+
+// Says why the queue is empty, so agents can tell "nothing yet" from "nothing you may review".
+async function emptyReason(db: D1Database, me: Agent, now: number): Promise<string> {
+  const r = await db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+         SUM(e.agent_id = ?1) AS yours,
+         SUM(e.agent_id != ?1 AND (a.net_hash = ?2 OR (a.owner IS NOT NULL AND a.owner = ?3))) AS same_network_or_owner,
+         SUM(EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'evidence' AND s.item_id = e.id AND s.reviewer_id = ?1)) AS already_yours
+       FROM evidence e JOIN agents a ON a.id = e.agent_id WHERE e.review_status = 'in_review' AND e.status = 'visible'`,
+    )
+    .bind(me.id, me.net_hash, me.owner)
+    .first<{ total: number; yours: number | null; same_network_or_owner: number | null; already_yours: number | null }>();
+  const total = r?.total ?? 0;
+  if (!total) return "nothing is waiting for review anywhere right now; come back later";
+  const taken = total - (r?.yours ?? 0) - (r?.same_network_or_owner ?? 0) - (r?.already_yours ?? 0);
+  return `${total} items are in review: ${r?.yours ?? 0} are yours, ${r?.same_network_or_owner ?? 0} come from your network or owner, ${r?.already_yours ?? 0} you already reviewed, and ${Math.max(0, taken)} already have enough reviewers assigned. Reviewers must be independent of the submitter, so try again when other agents have submitted.`;
 }
 
 export async function eligibleCount(db: D1Database, me: Agent, now = Date.now()): Promise<number> {
@@ -132,6 +151,7 @@ async function renderItem(db: D1Database, assignmentId: string, type: string, it
     untrusted_note: row.note,
     source_url: row.source_url,
     source_host: new URL(row.source_url).hostname,
+    source_tier: sourceTier(new URL(row.source_url).hostname),
     untrusted_page_title: row.page_title,
   };
 }
@@ -302,7 +322,12 @@ export async function refreshStatus(db: D1Database, agentId: string) {
   const pct = FIXED.activate_min_accuracy_pct / 100;
   let next: Agent["status"] = a.status;
   if (bad >= FIXED.suspend_after_bad_golds && g.accuracy < 0.5) next = "suspended";
-  else if (a.status === "probation" && g.accuracy >= pct && (g.total >= FIXED.activate_min_golds || (a.accepted >= 3 && g.total >= 3))) next = "active";
+  else if (
+    a.status === "probation" &&
+    g.accuracy >= pct &&
+    (g.total >= FIXED.activate_min_golds || (a.accepted >= FIXED.activate_alt_accepted && g.total >= FIXED.activate_alt_golds))
+  )
+    next = "active";
   else if (a.status === "active" && g.total >= FIXED.activate_min_golds && g.accuracy < pct - 0.15) next = "probation";
   if (next !== a.status) {
     await db.prepare("UPDATE agents SET status = ?1 WHERE id = ?2").bind(next, agentId).run();
@@ -312,5 +337,5 @@ export async function refreshStatus(db: D1Database, agentId: string) {
 
 export function activationHint(a: Agent): string {
   const g = goldStats(a);
-  return `Pass ${FIXED.activate_min_golds} quality checks inside reviews with at least ${FIXED.activate_min_accuracy_pct}% accuracy (or get 3 pieces of evidence accepted and pass 3 checks). You have passed ${g.good} of ${g.total}. Only active agents' votes count.`;
+  return `Quality checks are hidden among review items. Become active by answering ${FIXED.activate_min_golds} of them with at least ${FIXED.activate_min_accuracy_pct}% accuracy, or by getting ${FIXED.activate_alt_accepted} pieces of evidence accepted after review and answering ${FIXED.activate_alt_golds} checks at that accuracy. So far: ${g.good} of ${g.total} checks right, ${a.accepted} evidence accepted. Only active agents' votes count.`;
 }
