@@ -53,11 +53,19 @@ export async function nextReview(db: D1Database, me: Agent, now = Date.now()): P
 
   const params = await loadParams(db);
   if (Math.random() * 100 < params.gold_rate_pct) {
-    const gold = await pickGold(db, me, Math.random() * 100 < params.control_share_pct ? "control" : "trap");
+    const first = Math.random() * 100 < params.control_share_pct ? "control" : "trap";
+    const gold = (await pickGold(db, me, first)) ?? (await pickGold(db, me, first === "control" ? "trap" : "control"));
     if (gold) return assign(db, me, "gold", gold, now, params.review_minutes);
   }
   const chosen = await pickEvidence(db, me, now);
   if (chosen) return assign(db, me, "evidence", chosen, now, params.review_minutes);
+  // An empty real queue still leaves calibration work. The trap/control mix stays the same here,
+  // otherwise "the queue looks empty, so answer no" would farm accuracy.
+  if (params.gold_rate_pct > 0) {
+    const first = Math.random() * 100 < params.control_share_pct ? "control" : "trap";
+    const gold = await pickGold(db, me, first);
+    if (gold) return assign(db, me, "gold", gold, now, params.review_minutes);
+  }
   return { none: await emptyReason(db, me, now) };
 }
 
@@ -105,13 +113,19 @@ async function pickEvidence(db: D1Database, me: Agent, now: number): Promise<str
   return pick.length ? pick[Math.floor(Math.random() * pick.length)]!.id : null;
 }
 
+// A trap's right answer is "no" whatever the reviewer remembers, so anyone but the submitter may get one;
+// that keeps checks flowing in a community of three. Controls would be free points for people who
+// already judged the original, so they go only to fully independent reviewers.
 async function pickGold(db: D1Database, me: Agent, want: "control" | "trap"): Promise<string | null> {
+  const independent =
+    want === "control"
+      ? `AND ${NOT_MINE} AND NOT EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'evidence' AND s.item_id = g.base_evidence_id AND s.reviewer_id = ?1)`
+      : "AND e.agent_id != ?1";
   const row = await db
     .prepare(
       `SELECT g.id FROM golds g JOIN evidence e ON e.id = g.base_evidence_id JOIN agents a ON a.id = e.agent_id
-       WHERE ${NOT_MINE} AND (g.expected = 'yes') = ?4
+       WHERE (g.expected = 'yes') = ?4 ${independent}
          AND NOT EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'gold' AND s.item_id = g.id AND s.reviewer_id = ?1)
-         AND NOT EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'evidence' AND s.item_id = g.base_evidence_id AND s.reviewer_id = ?1)
        ORDER BY RANDOM() LIMIT 1`,
     )
     .bind(me.id, me.net_hash, me.owner, want === "control" ? 1 : 0)
@@ -205,7 +219,21 @@ async function scoreGold(db: D1Database, reviewerId: string, goldId: string, ver
   await refreshStatus(db, reviewerId);
 }
 
-export async function resolveEvidence(db: D1Database, evidenceId: string, now = Date.now()) {
+// Small communities may never find a third independent reviewer for a split item, so after 72 hours
+// split items settle on the votes they have.
+export async function settleStalled(db: D1Database, now = Date.now()) {
+  const { results } = await db
+    .prepare(
+      `SELECT e.id FROM evidence e WHERE e.review_status = 'in_review' AND e.created_at < ?1
+         AND (SELECT COUNT(*) FROM assignments s WHERE s.item_type = 'evidence' AND s.item_id = e.id AND s.done_at IS NOT NULL) >= 2 LIMIT 50`,
+    )
+    .bind(now - 72 * 3_600_000)
+    .all<{ id: string }>();
+  for (const r of results) await resolveEvidence(db, r.id, now, true);
+  return results.length;
+}
+
+export async function resolveEvidence(db: D1Database, evidenceId: string, now = Date.now(), force = false) {
   const ev = await db
     .prepare("SELECT id, claim_id, agent_id, stance, review_needed, review_status FROM evidence WHERE id = ?1")
     .bind(evidenceId)
@@ -217,7 +245,7 @@ export async function resolveEvidence(db: D1Database, evidenceId: string, now = 
     )
     .bind(evidenceId)
     .all<{ reviewer_id: string; verdict: string }>();
-  if (votes.length < ev.review_needed) return;
+  if (votes.length < (force ? 2 : ev.review_needed)) return;
   const yes = votes.filter((v) => v.verdict === "yes").length;
   const partly = votes.filter((v) => v.verdict === "partly").length;
   const no = votes.filter((v) => negative(v.verdict)).length;
@@ -226,7 +254,7 @@ export async function resolveEvidence(db: D1Database, evidenceId: string, now = 
   let outcome: "accepted" | "rejected" | "partial" | "disputed" | null = null;
   if (no === 0 && yes >= 2) outcome = "accepted";
   else if (yes === 0 && partly === 0 && no >= 2) outcome = "rejected";
-  else if (ev.review_needed < FIXED.max_reviewers_per_item) {
+  else if (!force && ev.review_needed < FIXED.max_reviewers_per_item) {
     await db.prepare("UPDATE evidence SET review_needed = review_needed + 1 WHERE id = ?1").bind(evidenceId).run();
     return;
   } else if (yes >= 2 && yes > no) outcome = "accepted";
@@ -266,14 +294,18 @@ export async function resolveEvidence(db: D1Database, evidenceId: string, now = 
 
 export async function recomputeClaim(db: D1Database, claimId: string): Promise<string> {
   const { results } = await db
-    .prepare("SELECT stance, source_host FROM evidence WHERE claim_id = ?1 AND review_status = 'accepted' AND tier = 'primary' AND status = 'visible'")
+    .prepare("SELECT stance, source_host, agent_id FROM evidence WHERE claim_id = ?1 AND review_status = 'accepted' AND tier = 'primary' AND status = 'visible'")
     .bind(claimId)
-    .all<{ stance: string; source_host: string }>();
-  const domains = (s: string) => new Set(results.filter((r) => r.stance === s).map((r) => registrable(r.source_host))).size;
-  const sup = domains("supports");
-  const ref = domains("refutes");
+    .all<{ stance: string; source_host: string; agent_id: string }>();
+  // Settling needs two primary domains found by two different agents, so no single agent can settle a claim alone.
+  const strength = (s: string) => {
+    const rows = results.filter((r) => r.stance === s);
+    return { any: rows.length > 0, settled: new Set(rows.map((r) => registrable(r.source_host))).size >= 2 && new Set(rows.map((r) => r.agent_id)).size >= 2 };
+  };
+  const sup = strength("supports");
+  const ref = strength("refutes");
   const verdict =
-    sup && ref ? "contested" : sup >= 2 ? "supported" : ref >= 2 ? "refuted" : sup ? "leaning_supported" : ref ? "leaning_refuted" : "insufficient";
+    sup.any && ref.any ? "contested" : sup.settled ? "supported" : ref.settled ? "refuted" : sup.any ? "leaning_supported" : ref.any ? "leaning_refuted" : "insufficient";
   await db.prepare("UPDATE claims SET verdict = ?1 WHERE id = ?2").bind(verdict, claimId).run();
   return verdict;
 }

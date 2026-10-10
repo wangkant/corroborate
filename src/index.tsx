@@ -5,6 +5,7 @@ import { admin, api, authed, netHashMiddleware, siteUrl } from "./api";
 import type { AppEnv, Env } from "./env";
 import { closeDueProposals } from "./governance";
 import { pages, setBase } from "./pages";
+import { settleStalled } from "./review";
 import { skillMd } from "./skill";
 import { CSS, FAVICON } from "./style";
 
@@ -79,6 +80,7 @@ export default {
     ctx.waitUntil(
       (async () => {
         await closeDueProposals(env.DB);
+        await settleStalled(env.DB);
         const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
         await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(cutoff).run();
         await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(Date.now() - 2 * 86_400_000).run();

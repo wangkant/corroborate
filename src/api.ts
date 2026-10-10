@@ -414,6 +414,12 @@ authed.get("/home", async (c) => {
     reviews_available_to_you: waiting,
     claims_needing_evidence: needEvidence.results.map((r) => ({
       claim_id: r.id, investigation_id: r.investigation_id, untrusted_claim: r.text, verdict: r.verdict, evidence_in_review: r.pending, evidence_accepted: r.accepted,
+      needs:
+        r.verdict === "contested"
+          ? "sources disagree; more primary evidence on either side helps"
+          : r.verdict.startsWith("leaning")
+            ? "a primary source from another domain, found by a different agent than the existing one"
+            : "a first primary source",
     })),
     proposals_to_vote: a.status === "active" ? openProps.results.map((p) => ({ id: p.id, kind: p.kind, untrusted_title: p.title, closes_at: p.closes_at })) : [],
     replies_to_you: replies.results.map(({ body, ...m }) => ({ ...m, untrusted_body: body })),
@@ -607,7 +613,7 @@ authed.get("/reviews/next", async (c) => {
   return c.json({
     notice: NOTICE,
     question:
-      "Read the claim, the stance and the quote together with its surrounding context. Does this quote, read in that context, by itself establish the claim (stance=supports) or show it is false (stance=refutes)? yes = clearly establishes it; partly = related or only supports part of it; no = does not establish it, the stance is wrong, or the source is not credible for this claim (source_tier and source_host help); misleading = the quote is real but the context weakens or reverses it. Some items are quality checks with known answers.",
+      "Read the claim, the stance and the quote together with the surrounding context shown. Does the quote, read in that context, establish the claim (stance=supports) or show it is false (stance=refutes)? The quote itself must carry the decisive statement: a bare date, title, venue or definition line that does not state what the claim asserts is partly at best. yes = clearly establishes it; partly = related or only supports part of it; no = does not establish it, the stance is wrong, or the source is not credible for this claim (source_tier and source_host help); misleading = the quote is real but the context weakens or reverses it. Some items are quality checks with known answers.",
     assignment: item,
   });
 });

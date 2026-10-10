@@ -1,4 +1,4 @@
-import { env, exports } from "cloudflare:workers";
+﻿import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const BASE = "https://corroborate.test/corroborate";
@@ -78,6 +78,8 @@ const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "eviden
 
 beforeEach(async () => {
   await db().batch(TABLES.map((t) => db().prepare(`DELETE FROM ${t}`)));
+  // Golds are random in production; tests switch them on explicitly.
+  await db().prepare("INSERT INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 0, 0)").run();
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -152,7 +154,7 @@ describe("snapshots and the mechanical check", () => {
     const inv = await seedInvestigation();
     const fake = await submit(a.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Moon", "The Moon's mean distance from Earth is about 500,000 kilometres");
     expect(fake.status).toBe(422);
-    const mangled = await submit(a.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Moon", "It recedes at 3.8 cm per year � measured");
+    const mangled = await submit(a.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Moon", "It recedes at 3.8 cm per year \\uFFFD measured".replace("\\uFFFD", String.fromCharCode(0xfffd)));
     expect(mangled.json.error).toMatch(/UTF-8/);
     for (const url of ["https://127.0.0.1/secret", "http://example.org/x", "https://source.example/redirect-internal", "https://source.example/pdf"]) {
       expect((await call("POST", "/api/snapshot", { token: a.token, body: { url } })).status).toBe(422);
@@ -213,8 +215,17 @@ describe("blind review, golds and reputation", () => {
     let claim = await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<{ verdict: string }>();
     expect(claim!.verdict).toBe("leaning_supported");
 
-    const e2 = await submit(author.token, inv.claims[0]!, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.");
-    expect(e2.status).toBe(201);
+    // A second domain from the same agent is not enough: settling needs two different submitters.
+    const same = await submit(author.token, inv.claims[0]!, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.");
+    for (const r of [r1, r2]) expect(await reviewTarget(r, "238,855 miles", "yes")).toBe(true);
+    claim = await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<{ verdict: string }>();
+    expect(claim!.verdict).toBe("leaning_supported");
+    expect(same.json.review_status).toBe("in_review");
+    const second = await register("10.9.9.9", "claude-sonnet-5-5");
+    const e2 = await submit(second.token, inv.claims[0]!, "https://science.nasa.gov/moon/facts", "The Moon takes about 27 days to orbit Earth. The Moon is an average");
+    expect(e2.status).toBe(422);
+    const e3 = await submit(second.token, inv.claims[0]!, "https://science.nasa.gov/moon/facts", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.");
+    expect(e3.status).toBe(201);
     for (const r of [r1, r2]) expect(await reviewTarget(r, "238,855 miles", "yes")).toBe(true);
     claim = await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<{ verdict: string }>();
     expect(claim!.verdict).toBe("supported");
@@ -230,6 +241,36 @@ describe("blind review, golds and reputation", () => {
     expect(check.json.results[0]).toMatchObject({ claim_id: inv.claims[0], verdict: "supported" });
     const fever = await call("GET", "/api/export/fever.jsonl");
     expect(JSON.parse(fever.text.trim().split("\n")[0]!)).toMatchObject({ label: "SUPPORTS", ai_generated: true, human_reviewed: false });
+  });
+
+  it("serves traps even to reviewers of the original, so a community of three can calibrate", async () => {
+    const author = await register("10.40.0.1");
+    const r1 = await register("10.41.0.1");
+    const r2 = await register("10.42.0.1");
+    const inv = await seedInvestigation();
+    await submit(author.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Moon", "mean distance from Earth is about 384,400 kilometres");
+    for (const r of [r1, r2]) expect(await reviewTarget(r, "384,400 kilometres", "yes")).toBe(true);
+    await db().prepare("INSERT OR REPLACE INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 100, 0), ('control_share_pct', 100, 0)").run();
+    const next = await call("GET", "/api/reviews/next", { token: r1.token });
+    expect(next.json.assignment.stance).toBe("refutes");
+    await call("POST", `/api/reviews/${next.json.assignment.assignment_id}`, { token: r1.token, body: { verdict: "no", reason: "the quote supports the claim, so refutes is wrong" } });
+    const s = await db().prepare("SELECT traps_caught, reputation FROM agents WHERE id = ?1").bind(r1.id).first<any>();
+    expect(s).toMatchObject({ traps_caught: 1, reputation: 1 });
+    expect((await call("GET", "/api/reviews/next", { token: author.token })).json.assignment).toBeNull();
+  });
+
+  it("settles split items that cannot find another reviewer after 72 hours", async () => {
+    const author = await register("10.43.0.1");
+    const [r1, r2] = [await register("10.44.0.1"), await register("10.45.0.1")];
+    const inv = await seedInvestigation();
+    const e = await submit(author.token, inv.claims[0]!, "https://en.wikipedia.org/wiki/Moon", "completes one orbit around Earth in about 27.3 days");
+    await reviewTarget(r1, "27.3 days", "yes");
+    await reviewTarget(r2, "27.3 days", "partly");
+    expect((await db().prepare("SELECT review_status, review_needed FROM evidence WHERE id = ?1").bind(e.json.evidence_id).first<any>())).toMatchObject({ review_status: "in_review", review_needed: 3 });
+    await db().prepare("UPDATE evidence SET created_at = 0 WHERE id = ?1").bind(e.json.evidence_id).run();
+    const { settleStalled } = await import("../src/review");
+    expect(await settleStalled(db())).toBe(1);
+    expect((await db().prepare("SELECT review_status FROM evidence WHERE id = ?1").bind(e.json.evidence_id).first<any>()).review_status).toBe("partial");
   });
 
   it("never accepts evidence on 'partly' alone", async () => {
@@ -257,7 +298,7 @@ describe("blind review, golds and reputation", () => {
         .bind(`gld_t${seq}_${i}`, e.json.evidence_id, `trap quote ${i}`)
         .run();
     }
-    await db().prepare("INSERT INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 100, 0), ('control_share_pct', 0, 0)").run();
+    await db().prepare("INSERT OR REPLACE INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 100, 0), ('control_share_pct', 0, 0)").run();
     for (let i = 0; i < 4; i++) {
       const next = await call("GET", "/api/reviews/next", { token: stamper.token });
       expect(next.json.assignment.untrusted_quote).toMatch(/trap quote/);
@@ -279,7 +320,7 @@ describe("blind review, golds and reputation", () => {
       )
       .bind(e.json.evidence_id)
       .run();
-    await db().prepare("INSERT INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 100, 0), ('control_share_pct', 100, 0)").run();
+    await db().prepare("INSERT OR REPLACE INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 100, 0), ('control_share_pct', 100, 0)").run();
     const next = await call("GET", "/api/reviews/next", { token: naysayer.token });
     await call("POST", `/api/reviews/${next.json.assignment.assignment_id}`, { token: naysayer.token, body: { verdict: "no", reason: "reject everything" } });
     const s = await db().prepare("SELECT controls_failed, reputation FROM agents WHERE id = ?1").bind(naysayer.id).first<any>();
