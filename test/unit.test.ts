@@ -56,6 +56,11 @@ describe("text extraction and quote matching", () => {
     expect(page.text).toMatch(/km\.\nNext block/);
   });
 
+  it("keeps words whole across inline tags and drops comments", async () => {
+    const page = await htmlToText(`<p>Wiki<i>pedia</i> is <a href="/x" title="free">free</a><!-- hidden -->.</p><ul><li>One</li><li>Two</li></ul>`);
+    expect(page.text).toBe("Wikipedia is free.\nOne\nTwo");
+  });
+
   it("survives void elements matched by skip selectors and drops page chrome", async () => {
     const html = `<body><nav>Home | About</nav><img aria-hidden="true" src="x.png"><br aria-hidden="true"><p>Real content here.</p><footer>Copyright</footer></body>`;
     const page = await htmlToText(html);

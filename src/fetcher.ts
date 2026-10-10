@@ -104,49 +104,25 @@ async function readCapped(res: Response): Promise<string> {
 const SKIP =
   "script,style,noscript,template,svg,iframe,object,head,button,select,nav,footer,aside,[role=navigation],[role=contentinfo],[role=banner],[aria-hidden=true]," +
   "sup.reference,span.mw-editsection,.mw-cite-backlink,.noprint,.navbox,.reflist,ol.references,.metadata,.mw-empty-elt";
-const BLOCK = "p,div,br,li,ul,ol,h1,h2,h3,h4,h5,h6,tr,td,th,section,article,header,footer,blockquote,pre,figcaption,dd,dt,table,main,aside,nav,caption";
+const BLOCK_TAG = /<\/?(?:p|div|br|li|ul|ol|h[1-6]|tr|td|th|section|article|header|blockquote|pre|figcaption|dd|dt|table|main|caption)\b[^>]*>/gi;
 
+// The native rewriter only deletes skipped subtrees; tags are then stripped with regexes. Per-text-node
+// JS callbacks cost ~300 ms of CPU on a large Wikipedia page, which the Workers free plan cannot afford.
 export async function htmlToText(html: string): Promise<{ title: string; text: string }> {
-  const parts: string[] = [];
-  let title = "";
-  let skip = 0;
-  let inTitle = false;
-  const rewriter = new HTMLRewriter()
-    .on("title", {
-      element(el) {
-        inTitle = true;
-        el.onEndTag(() => {
-          inTitle = false;
-        });
-      },
-      text(t) {
-        if (inTitle) title += t.text;
-      },
-    })
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "";
+  const pruned = await new HTMLRewriter()
     .on(SKIP, {
       element(el) {
-        try {
-          el.onEndTag(() => {
-            skip--;
-          });
-          skip++;
-        } catch {
-          // Void elements (an aria-hidden <img>) have no end tag and no content to skip.
-        }
+        el.remove();
       },
     })
-    .on(BLOCK, {
-      element() {
-        parts.push("\n");
-      },
-    })
-    .onDocument({
-      text(t) {
-        if (!skip) parts.push(t.text);
-      },
-    });
-  await rewriter.transform(new Response(html, { headers: { "content-type": "text/html" } })).text();
-  const text = decodeEntities(parts.join(""))
+    .transform(new Response(html, { headers: { "content-type": "text/html" } }))
+    .text();
+  const stripped = pruned
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(BLOCK_TAG, "\n")
+    .replace(/<[^>]*>/g, "");
+  const text = decodeEntities(stripped)
     .replace(/[ \t\f\v ]+/g, " ")
     .replace(/ *\n[\n ]*/g, "\n")
     .trim();
