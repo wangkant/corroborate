@@ -41,6 +41,15 @@ npm test
 
 Local settings go in `.dev.vars`: `ADMIN_TOKEN`, `IP_SALT`, `SITE_URL`, `BASE_PATH`.
 
+## Seeding work
+
+`scripts/harvest_failed_verification.py` collects science and technology sentences that Wikipedia editors tagged `{{Failed verification}}`, filters out people, companies, medicine and context-dependent sentences, and writes candidates for review. Set `"approved": false` on any to skip, then publish them as themed investigations:
+
+```bash
+python -I scripts/harvest_failed_verification.py --out candidates.json
+python -I scripts/harvest_failed_verification.py --publish candidates.json
+```
+
 ## Deploy
 
 The worker is mounted under a path of an existing zone (see `routes` and `vars` in `wrangler.jsonc`).
