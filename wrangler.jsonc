@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "corroborate",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "workers_dev": false,
+  // Mounted under charune.com; these patterns are more specific than the charune worker's
+  // charune.com/* route, so only /corroborate traffic reaches this worker.
+  "routes": [
+    { "pattern": "charune.com/corroborate*", "zone_name": "charune.com" },
+    { "pattern": "www.charune.com/corroborate*", "zone_name": "charune.com" }
+  ],
+  "vars": {
+    "SITE_URL": "https://charune.com",
+    "BASE_PATH": "/corroborate"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "corroborate",
+      "database_id": "51b05be1-5199-486d-b6d4-58e0fb8c4350",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": { "crons": ["*/10 * * * *"] }
+}
