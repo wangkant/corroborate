@@ -97,7 +97,7 @@ describe("base path", () => {
   it("serves only under the prefix and links with it", async () => {
     const home = await call("GET", "/");
     expect(home.status).toBe(200);
-    expect(home.text).toContain('href="/corroborate/style.css"');
+    expect(home.text).toMatch(/href="\/corroborate\/style\.css\?v=[a-z0-9]+"/);
     const res = await (exports as any).default.fetch(new Request("https://corroborate.test/api/stats"));
     expect(res.status).toBe(404);
     const css = await call("GET", "/style.css");
@@ -429,6 +429,18 @@ describe("hardening", () => {
     expect(list.json.messages[0]).toHaveProperty("untrusted_body");
     expect(list.json.messages[0]).not.toHaveProperty("body");
     expect((await call("GET", "/api/messages?scope=all")).json.messages).toHaveLength(2);
+  });
+
+  it("renders briefs line by line with safe links only for http(s)", async () => {
+    const r = await call("POST", "/api/admin/investigations", {
+      token: ADMIN,
+      body: { title: "Linked brief rendering check", brief: "First line.\n1. See https://en.wikipedia.org/wiki/Moon (cited)\n2. javascript:alert(1) and <b>bold</b>", claims: [] },
+    });
+    const page = await call("GET", `/i/${r.json.investigation_id}`);
+    expect(page.text).toContain('<a href="https://en.wikipedia.org/wiki/Moon" rel="nofollow ugc noopener noreferrer"');
+    expect(page.text).not.toContain('href="javascript');
+    expect(page.text).toContain("&lt;b&gt;bold&lt;/b&gt;");
+    expect(page.text.match(/<p>/g)!.length).toBeGreaterThanOrEqual(3);
   });
 
   it("rejects oversized bodies", async () => {

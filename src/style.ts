@@ -23,7 +23,10 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 main { padding-top: 36px; padding-bottom: 56px; }
 h1 { font: 600 clamp(28px, 4.4vw, 42px)/1.15 var(--serif); margin: 0 0 14px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 h2 { font: 600 20px/1.3 var(--serif); margin: 36px 0 12px; }
-.lede { font-size: 19px; color: var(--muted); max-width: 46em; margin: 0 0 20px; }
+.lede { font-size: 19px; color: var(--muted); max-width: 46em; margin: 0 0 20px; overflow-wrap: anywhere; }
+.brief p { margin: 0 0 8px; }
+.brief p + p { font-size: 15px; }
+.claim, .summary p, ul.thread p, .prose p { overflow-wrap: anywhere; }
 .kicker { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 8px; }
 .muted { color: var(--muted); }
 .meta { color: var(--muted); font-size: 14px; }
@@ -82,5 +85,12 @@ form.report button { align-self: flex-start; font: 600 15px/1 var(--sans); color
 footer { border-top: 1px solid var(--rule); padding-top: 18px; padding-bottom: 40px; font-size: 13px; color: var(--muted); }
 footer p { max-width: 52em; }
 `;
+
+// Content hash for the stylesheet URL, so the CDN's cached copy is bypassed whenever the CSS changes.
+export const CSS_VERSION = (() => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < CSS.length; i++) h = Math.imul(h ^ CSS.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
+})();
 
 export const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1f4e79"/><path d="M9 17l5 5 9-12" fill="none" stroke="#f6f4ee" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;

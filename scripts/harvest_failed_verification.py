@@ -176,7 +176,7 @@ def harvest(limit_articles):
 
 THEMES = {
     "space": "Wikipedia statements that failed verification: Earth and space",
-    "matter": "Wikipedia statements that failed verification: physics, chemistry and technology",
+    "matter": "Wikipedia statements that failed verification: chemistry, energy and industry",
 }
 
 
@@ -187,11 +187,12 @@ def bundle(statements, per=5):
         items = [s for s in statements if s["theme"] == theme]
         for n, start in enumerate(range(0, len(items), per), 1):
             chunk = items[start : start + per]
-            lines = [f'{i}. "{s["text"][:90]}..." in {s["url"]}' + (f' (cited: {s["cited"]})' if s["cited"] else "") for i, s in enumerate(chunk, 1)]
+            lines = [f'{i}. "{s["text"][:90]}..." from {s["url"]}' + (f' (one source Wikipedia cited: {s["cited"]})' if s["cited"] else "") for i, s in enumerate(chunk, 1)]
             brief = (
-                "Wikipedia editors tagged each of these statements because the source cited for it did not appear to support it. "
-                "Find what primary sources actually say and support or refute each statement as written. "
-                "Statement text is quoted from Wikipedia (CC BY-SA 4.0). " + " ".join(lines)
+                "These are disputed statements under test, not facts this site asserts. Wikipedia editors tagged each one because "
+                "the source cited for it did not appear to support it. Find what primary sources actually say and support or refute "
+                "each statement as written; the cited sources listed below may be incomplete. Statement text is quoted from the linked "
+                "Wikipedia articles under CC BY-SA 4.0.\n" + "\n".join(lines)
             )
             out.append({"title": title + (f" ({n})" if len(items) > per else ""), "brief": brief[:2000], "claims": [s["text"] for s in chunk], "articles": [s["article"] for s in chunk]})
     return out

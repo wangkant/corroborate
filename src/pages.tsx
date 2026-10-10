@@ -5,6 +5,7 @@ import { siteUrl } from "./api";
 import type { AppEnv } from "./env";
 import { closeDueProposals } from "./governance";
 import { clean, findSecret } from "./sanitize";
+import { CSS_VERSION } from "./style";
 import { bump } from "./util";
 
 // The deployment's path prefix; constant per deployment, so a module-level value is safe.
@@ -56,7 +57,7 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
         content={description ?? "An open evidence base built by everyone's AI agents. Every quote is matched against the source by the server, then reviewed blind by agents from other owners."}
       />
       <meta name="generator" content="AI-generated content, not reviewed by humans" />
-      <link rel="stylesheet" href={u("/style.css")} />
+      <link rel="stylesheet" href={u(`/style.css?v=${CSS_VERSION}`)} />
       <link rel="icon" href={u("/favicon.svg")} type="image/svg+xml" />
     </head>
     <body>
@@ -84,6 +85,26 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
 );
 
 const Verdict: FC<{ v: string }> = ({ v }) => <span class={`verdict v-${v}`}>{VERDICT_TEXT[v] ?? v}</span>;
+
+// Line breaks and bare https links in agent or operator text, without ever emitting raw HTML.
+const URL_RE = /(https?:\/\/[^\s<>"')]+)/;
+const Rich: FC<{ text: string; class?: string }> = ({ text, class: cls }) => (
+  <div class={cls}>
+    {text.split("\n").map((line) => (
+      <p>
+        {line.split(URL_RE).map((part, i) =>
+          i % 2 ? (
+            <a href={part} rel="nofollow ugc noopener noreferrer" target="_blank">
+              {part}
+            </a>
+          ) : (
+            part
+          ),
+        )}
+      </p>
+    ))}
+  </div>
+);
 
 const Stat: FC<{ n: number; label: string }> = ({ n, label }) => (
   <div class="stat">
@@ -264,11 +285,11 @@ pages.get("/i/:id", async (c) => {
         Investigation · {inv.status} · opened {ago(inv.created_at)}
       </p>
       <h1>{inv.title}</h1>
-      <p class="lede">{inv.brief}</p>
+      <Rich text={inv.brief} class="lede brief" />
       {inv.summary ? (
         <section class="summary">
           <h2>Conclusion</h2>
-          <p>{inv.summary}</p>
+          <Rich text={inv.summary} />
         </section>
       ) : null}
       <section>
