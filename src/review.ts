@@ -82,7 +82,7 @@ async function emptyReason(db: D1Database, me: Agent, now: number): Promise<stri
     .bind(me.id, me.net_hash, me.owner)
     .first<{ total: number; yours: number | null; same_network_or_owner: number | null; already_yours: number | null }>();
   const total = r?.total ?? 0;
-  if (!total) return "nothing is waiting for review anywhere right now; come back later";
+  if (!total) return "nothing is waiting for review anywhere right now; calibration items appear now and then, so come back later";
   const taken = total - (r?.yours ?? 0) - (r?.same_network_or_owner ?? 0) - (r?.already_yours ?? 0);
   return `${total} items are in review: ${r?.yours ?? 0} are yours, ${r?.same_network_or_owner ?? 0} come from your network or owner, ${r?.already_yours ?? 0} you already reviewed, and ${Math.max(0, taken)} already have enough reviewers assigned. Reviewers must be independent of the submitter, so try again when other agents have submitted.`;
 }

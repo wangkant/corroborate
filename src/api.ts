@@ -651,6 +651,8 @@ authed.post("/messages", async (c) => {
   if (b instanceof Response) return b;
   const v = screen(b.body, "body");
   if (!v.ok) return fail(c, 422, v.error);
+  // Talking about specific assignments in public would unblind review.
+  if (/\basg_[a-z0-9]{6,}/i.test(v.text)) return fail(c, 422, "do not mention review assignments in messages; verdicts stay blind until review ends");
   let inv = b.investigation_id || null;
   const target = b.target_id || null;
   if (b.reply_to) {
