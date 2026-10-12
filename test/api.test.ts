@@ -74,7 +74,7 @@ async function reviewTarget(r: { token: string }, quoteFragment: string, verdict
   return false;
 }
 
-const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events"];
+const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads"];
 
 beforeEach(async () => {
   await db().batch(TABLES.map((t) => db().prepare(`DELETE FROM ${t}`)));
@@ -86,6 +86,19 @@ beforeEach(async () => {
     if (url.startsWith("https://en.wikipedia.org/w/index.php?title=")) return html(WIKI);
     if (url.startsWith("https://science.nasa.gov/moon")) return html(NASA);
     if (url.startsWith("https://blog.example/moon")) return html(NASA);
+    if (url.startsWith("https://export.arxiv.org/api/query"))
+      return new Response(
+        `<feed><entry><id>http://arxiv.org/abs/2609.20871v1</id><published>2026-09-15T16:25:32Z</published><title>Clique partitions, answering Erdős Problem #81</title><summary>Every chordal graph has clique partition number at most n^2/6+n/6+O(1).</summary><author><name>Obinna Okechukwu</name></author></entry>
+         <entry><id>http://arxiv.org/abs/2610.11642v1</id><published>2026-10-08T00:00:00Z</published><title>A counterexample to the Erdős--Sós bipartite-link conjecture</title><summary>We disprove it.</summary><author><name>C. Person</name></author></entry>
+         <entry><id>http://arxiv.org/abs/2609.37471v1</id><published>2026-09-29T00:00:00Z</published><title>A negative answer to Erdős Problem #786</title><summary>We answer it.</summary><author><name>D. Person</name></author></entry>
+         <entry><id>http://arxiv.org/abs/2609.32140v1</id><published>2026-09-26T00:00:00Z</published><title>An elementary proof of Erdős Problem #2</title><summary>Already settled.</summary><author><name>E. Person</name></author></entry></feed>`,
+        { headers: { "content-type": "application/atom+xml" } },
+      );
+    if (url.startsWith("https://raw.githubusercontent.com/teorth/erdosproblems/main/data/problems.yaml"))
+      return new Response(
+        `- number: "2"\n  informal_status:\n    state: "disproved"\n  formalized:\n    state: "yes"\n- number: "786"\n  informal_status:\n    state: "open"\n    last_update: "2025-08-31"\n  formalized:\n    state: "no"\n- number: "900"\n  informal_status:\n    state: "open"\n`,
+        { headers: { "content-type": "text/plain" } },
+      );
     if (url.startsWith("https://source.example/pdf")) return new Response("%PDF", { headers: { "content-type": "application/pdf" } });
     if (url.startsWith("https://source.example/redirect-internal")) return new Response(null, { status: 302, headers: { location: "https://127.0.0.1/admin" } });
     return new Response("not found", { status: 404 });
@@ -224,6 +237,39 @@ describe("snapshots and the mechanical check", () => {
     const page = await call("GET", "/findings");
     expect(page.text).toContain("candidate reference, not checked by a mathematician");
     expect((await call("GET", "/api/stats")).json.claims_supported).toBe(0);
+  });
+
+  it("pulls arXiv leads daily and matches them to open Erdős claims", async () => {
+    const a = await register("192.0.2.8");
+    const r = await call("POST", "/api/admin/investigations", {
+      token: ADMIN,
+      body: {
+        title: "Erdős problems: literature check, leads test",
+        brief: "Literature check pilot for the lead test.",
+        claims: [{ text: "A published paper answers the main question of Erdős Problem #81 in full.", origin_url: "https://github.com/google-deepmind/formal-conjectures/blob/abc/FormalConjectures/ErdosProblems/81.lean" }],
+        verdict_cap: "candidate",
+      },
+    });
+    const claimId = (await call("GET", `/api/investigations/${r.json.investigation_id}`)).json.claims[0].id;
+    expect((await call("POST", "/api/admin/leads", { token: ADMIN })).json).toEqual({ fetched: 4, added: 4, claims_added: 1 });
+    const rolling = (await call("GET", "/api/investigations")).json.investigations.find((i: any) => i.untrusted_title.startsWith("Erdős problems named in new papers"));
+    const rollingClaims = (await call("GET", `/api/investigations/${rolling.id}`)).json.claims;
+    expect(rollingClaims).toHaveLength(1);
+    const lead786 = (await call("GET", "/api/leads?days=120")).json.leads.find((l: any) => l.id === "2609.37471");
+    expect(lead786.claims[0].claim_id).toBe(rollingClaims[0].id);
+    expect(rollingClaims[0]).toMatchObject({ quoted_from: "https://www.erdosproblems.com/786" });
+    expect(rollingClaims[0].untrusted_text).toContain("Erdős Problem #786");
+    expect((await call("POST", "/api/admin/leads", { token: ADMIN })).json.claims_added).toBe(0);
+    const leads = (await call("GET", "/api/leads?days=120")).json.leads;
+    const hit = leads.find((l: any) => l.id === "2609.20871");
+    expect(hit).toMatchObject({ problems: ["81"], claims: [{ problem: "81", claim_id: claimId }] });
+    const home = await call("GET", "/api/home", { token: a.token });
+    const withClaims = home.json.new_papers_to_check.filter((p: any) => p.open_claims.length);
+    expect(withClaims.find((p: any) => p.arxiv === "https://arxiv.org/abs/2609.20871")).toMatchObject({ open_claims: [claimId] });
+    expect(home.json.new_papers_to_check.indexOf(withClaims.at(-1))).toBeLessThan(withClaims.length);
+    expect(home.json.new_papers_to_check.map((p: any) => p.arxiv)).toContain("https://arxiv.org/abs/2610.11642");
+    expect((await call("GET", "/leads")).text).toContain("Clique partitions, answering Erdős Problem #81");
+    expect((await call("GET", `/c/${claimId}`)).text).toContain("New papers that mention this problem");
   });
 
   it("marks non-primary sources as context", async () => {

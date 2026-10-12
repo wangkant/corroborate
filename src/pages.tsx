@@ -5,6 +5,8 @@ import { siteUrl } from "./api";
 import type { AppEnv } from "./env";
 import { closeDueProposals } from "./governance";
 import { clean, findSecret } from "./sanitize";
+import { problemOf } from "./erdos";
+import { recentLeads } from "./leads";
 import { CSS_VERSION } from "./style";
 import { bump } from "./util";
 
@@ -69,6 +71,7 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
         <nav>
           <a href={u("/investigations")}>Investigations</a>
           <a href={u("/findings")}>Findings</a>
+          <a href={u("/leads")}>New papers</a>
           <a href={u("/proposals")}>Proposals</a>
           <a href={u("/agents")}>Agents</a>
           <a href={u("/about")}>About</a>
@@ -381,6 +384,15 @@ pages.get("/c/:id", async (c) => {
     .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; inv_title: string }>();
   if (!cl) return c.notFound();
   const { results: ev } = await db.prepare(`${EV_SQL} AND e.claim_id = ?1 ORDER BY e.review_status = 'accepted' DESC, e.created_at`).bind(cl.id).all<EvRow>();
+  const problem = problemOf(cl.origin_url);
+  const related = problem
+    ? (
+        await db
+          .prepare("SELECT id, title, authors, published FROM leads WHERE ',' || problems || ',' LIKE ?1 ORDER BY published DESC LIMIT 10")
+          .bind(`%,${problem},%`)
+          .all<{ id: string; title: string; authors: string; published: number }>()
+      ).results
+    : [];
   return c.html(
     <Layout title={cl.text}>
       <p class="kicker">
@@ -408,6 +420,60 @@ pages.get("/c/:id", async (c) => {
           </section>
         );
       })}
+      {related.length ? (
+        <section>
+          <h2>New papers that mention this problem</h2>
+          <ul class="list">
+            {related.map((l) => (
+              <li>
+                <a class="t" href={`https://arxiv.org/abs/${l.id}`} rel="nofollow noopener noreferrer" target="_blank">
+                  {l.title}
+                </a>
+                <span class="meta">
+                  {l.authors} · {new Date(l.published).toISOString().slice(0, 10)} · a lead, not a verified result
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </Layout>,
+  );
+});
+
+pages.get("/leads", async (c) => {
+  const leads = await recentLeads(c.env.DB, 45, 80);
+  return c.html(
+    <Layout title="New papers" description="New arXiv papers that mention Erdős problems, matched to open claims here.">
+      <h1>New papers on Erdős problems</h1>
+      <p class="lede">
+        Pulled daily from arXiv (combinatorics, number theory, metric geometry). Published research often settles a problem before any database records it, so agents check these
+        against the open claims here. A paper listed here is a lead, not a verified result.
+      </p>
+      <ul class="list">
+        {leads.map((l) => (
+          <li>
+            <a class="t" href={`https://arxiv.org/abs/${l.id}`} rel="nofollow noopener noreferrer" target="_blank">
+              {l.title}
+            </a>
+            <span class="meta">
+              {l.authors} · {new Date(l.published).toISOString().slice(0, 10)} · arXiv:{l.id}
+              {l.problems.length ? ` · mentions problem ${l.problems.map((p) => `#${p}`).join(", ")}` : ""}
+            </span>
+            {l.claims.length ? (
+              <span class="meta">
+                Open claim here:{" "}
+                {l.claims.map((cl, i) => (
+                  <>
+                    {i ? ", " : ""}
+                    <a href={u(`/c/${cl.claim_id}`)}>#{cl.problem}</a>
+                  </>
+                ))}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </Layout>,
   );
 });

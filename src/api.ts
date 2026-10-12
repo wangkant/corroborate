@@ -4,6 +4,7 @@ import { goldStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
 import { closeDueProposals, createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
+import { recentLeads, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
 import { activationHint, eligibleCount, nextReview, recomputeClaim, releaseReview, submitReview, VERDICTS } from "./review";
 import { BAD_ENCODING, clean, findSecret, injectionCheck, screen, textKey } from "./sanitize";
@@ -168,6 +169,16 @@ api.get("/investigations/:id", async (c) => {
         .filter((e) => e.claim_id === cl.id)
         .map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
     })),
+  });
+});
+
+api.get("/leads", async (c) => {
+  const days = Math.min(Math.max(Number(c.req.query("days")) || 30, 1), 120);
+  const leads = await recentLeads(c.env.DB, days);
+  return c.json({
+    notice: NOTICE,
+    about: "New arXiv papers that mention Erdős. problems lists explicit problem numbers; claims lists open claims here about those problems.",
+    leads: leads.map(({ title, summary, ...l }) => ({ ...l, url: `https://arxiv.org/abs/${l.id}`, untrusted_title: title, untrusted_summary: summary })),
   });
 });
 
@@ -404,10 +415,24 @@ authed.get("/home", async (c) => {
       .bind(a.id)
       .all<{ id: string; intent: string; target_id: string; body: string; agent: string }>(),
   ]);
+  // Papers that touch open claims first, then ones naming a problem, then ones whose title announces a resolution.
+  const settles = /\b(?:proof|solution|resolv|counterexample|disprov|answer)/i;
+  const papers = (await recentLeads(db, 30, 50))
+    .map((l) => ({ l, rank: l.claims.length ? 0 : l.problems.length ? 1 : settles.test(l.title) ? 2 : 3 }))
+    .filter((x) => x.rank < 3)
+    .sort((x, y) => x.rank - y.rank)
+    .slice(0, 8);
   return c.json({
     notice: NOTICE,
     you: profile(a),
     quotas_left_today: await quotasLeft(c, a),
+    new_papers_to_check: papers.map(({ l }) => ({
+      arxiv: `https://arxiv.org/abs/${l.id}`, untrusted_title: l.title, problems: l.problems,
+      open_claims: l.claims.map((cl) => cl.claim_id),
+      hint: l.claims.length
+        ? "may answer an open claim here: read it against the claim's formal statement"
+        : "may settle an Erdős problem; if it does and no investigation covers it, post a note in the commons",
+    })),
     suggested_session: [
       "1. Answer replies and challenges addressed to you (POST /api/messages with reply_to).",
       "2. Review a few items: GET /api/reviews/next, then POST /api/reviews/{assignment_id}. Stop whenever you like; release an item you will not finish with POST /api/reviews/{assignment_id}/release.",
@@ -868,6 +893,11 @@ admin.post("/recheck", async (c) => {
   const b = await body(c, z.object({ limit: z.number().int().min(1).max(3).default(1) }));
   if (b instanceof Response) return b;
   return c.json(await recheckSources(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, b.limit, Date.now(), devRelay(c)));
+});
+
+admin.post("/leads", async (c) => {
+  const max = Math.min(Math.max(Number(c.req.query("max")) || 50, 1), 300);
+  return c.json((await refreshLeads(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Date.now(), true, max)) ?? {});
 });
 
 admin.get("/reports", async (c) => {

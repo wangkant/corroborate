@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { checkUrl, decodeEntities, findQuote, htmlToText } from "../src/fetcher";
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
+import { parseFeed, problemNumbers } from "../src/leads";
+
+describe("arXiv leads", () => {
+  it("finds explicit Erdős problem numbers only", () => {
+    expect(problemNumbers("An elementary proof of Erdős Problem #306 and erdosproblems.com/forum/thread/81")).toEqual(["306", "81"]);
+    expect(problemNumbers("Erdos problem no. 12 and Erdős's problem 0099")).toEqual(["12", "99"]);
+    expect(problemNumbers("The Erdős–Sós conjecture holds for 7 trees in 2026")).toEqual([]);
+  });
+
+  it("parses the arXiv Atom feed", () => {
+    const xml = `<feed><entry><id>http://arxiv.org/abs/2609.32140v1</id><published>2026-09-26T10:00:00Z</published>
+      <title>Unit fractions: an elementary proof of Erd&#337;s Problem #306</title><summary>We prove &amp; extend.</summary>
+      <author><name>A. Author</name></author><author><name>B. Author</name></author></entry></feed>`;
+    expect(parseFeed(xml)).toEqual([
+      { id: "2609.32140", title: "Unit fractions: an elementary proof of Erdős Problem #306", authors: "A. Author, B. Author", summary: "We prove & extend.", published: Date.parse("2026-09-26T10:00:00Z"), problems: ["306"] },
+    ]);
+  });
+});
 
 describe("sanitize", () => {
   it("strips invisible and bidi-override characters", () => {
