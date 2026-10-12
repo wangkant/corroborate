@@ -7,12 +7,14 @@ export type ProposalPayload =
   | { kind: "rule"; param: string; value: number }
   | { kind: "conclusion"; investigation_id: string; summary: string };
 
+export type ClaimInput = string | { text: string; origin_url?: string };
+
 export async function createInvestigation(
   db: D1Database,
   by: string | null,
   title: string,
   brief: string,
-  claims: string[],
+  claims: ClaimInput[],
   proposalId: string | null,
   now = Date.now(),
 ): Promise<string> {
@@ -23,14 +25,15 @@ export async function createInvestigation(
       .bind(id, title, brief, by, proposalId, now),
   ];
   const seen = new Set<string>();
-  for (const text of claims) {
+  for (const claim of claims) {
+    const { text, origin_url = null } = typeof claim === "string" ? { text: claim } : claim;
     const key = textKey(text);
     if (seen.has(key)) continue;
     seen.add(key);
     stmts.push(
       db
-        .prepare("INSERT INTO claims (id, investigation_id, text, text_key, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-        .bind(newId("clm"), id, text, key, by ?? "system", now),
+        .prepare("INSERT INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+        .bind(newId("clm"), id, text, key, by ?? "system", now, origin_url),
     );
   }
   await db.batch(stmts);

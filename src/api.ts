@@ -4,7 +4,8 @@ import { goldStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
 import { closeDueProposals, createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
-import { activationHint, eligibleCount, nextReview, releaseReview, submitReview, VERDICTS } from "./review";
+import { recheckSources } from "./recheck";
+import { activationHint, eligibleCount, nextReview, recomputeClaim, releaseReview, submitReview, VERDICTS } from "./review";
 import { BAD_ENCODING, clean, findSecret, injectionCheck, screen, textKey } from "./sanitize";
 import { registrable, sourceTier } from "./tiers";
 import { bump, hashNet, hashToken, logEvent, modelFamily, newId, newToken, timingSafeEqual, usageToday } from "./util";
@@ -141,12 +142,12 @@ api.get("/investigations/:id", async (c) => {
   if (!inv) return fail(c, 404, "no such investigation");
   const { results: claims } = await db
     .prepare(
-      `SELECT c.id, c.text, c.verdict,
+      `SELECT c.id, c.text, c.verdict, c.origin_url,
          (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'in_review' AND e.status = 'visible') AS pending
        FROM claims c WHERE c.investigation_id = ?1 AND c.status = 'visible' ORDER BY c.created_at`,
     )
     .bind(inv.id)
-    .all<{ id: string; text: string; verdict: string; pending: number }>();
+    .all<{ id: string; text: string; verdict: string; origin_url: string | null; pending: number }>();
   const { results: ev } = await db
     .prepare(
       `SELECT e.id, e.claim_id, e.source_url, e.tier, e.quote, e.stance, e.review_status, a.name AS agent
@@ -160,7 +161,7 @@ api.get("/investigations/:id", async (c) => {
     ...AI_LABEL,
     investigation: { id: inv.id, status: inv.status, untrusted_title: inv.title, untrusted_brief: inv.brief, untrusted_summary: inv.summary, created_at: inv.created_at },
     claims: claims.map((cl) => ({
-      id: cl.id, untrusted_text: cl.text, verdict: cl.verdict, evidence_in_review: cl.pending,
+      id: cl.id, untrusted_text: cl.text, verdict: cl.verdict, quoted_from: cl.origin_url, evidence_in_review: cl.pending,
       evidence: ev
         .filter((e) => e.claim_id === cl.id)
         .map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
@@ -172,9 +173,9 @@ api.get("/investigations/:id", async (c) => {
 api.get("/claims/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
-    .prepare("SELECT c.id, c.text, c.verdict, c.investigation_id FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'")
+    .prepare("SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'")
     .bind(c.req.param("id"))
-    .first<{ id: string; text: string; verdict: string; investigation_id: string }>();
+    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null }>();
   if (!cl) return fail(c, 404, "no such claim");
   const { results: ev } = await db
     .prepare(
@@ -186,7 +187,7 @@ api.get("/claims/:id", async (c) => {
   return c.json({
     notice: NOTICE,
     ...AI_LABEL,
-    claim: { id: cl.id, investigation_id: cl.investigation_id, untrusted_text: cl.text, verdict: cl.verdict },
+    claim: { id: cl.id, investigation_id: cl.investigation_id, untrusted_text: cl.text, verdict: cl.verdict, quoted_from: cl.origin_url },
     evidence: ev
       .filter((e) => e.review_status !== "in_review")
       .map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
@@ -536,9 +537,9 @@ authed.post("/claims/:id/evidence", async (c) => {
   const b = await body(c, evidenceSchema);
   if (b instanceof Response) return b;
   const claim = await db
-    .prepare("SELECT c.id FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status = 'open'")
+    .prepare("SELECT c.id, c.origin_url FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status = 'open'")
     .bind(c.req.param("id"))
-    .first<{ id: string }>();
+    .first<{ id: string; origin_url: string | null }>();
   if (!claim) return fail(c, 404, "no open claim with that id");
   const p = await loadParams(db);
   if (b.quote.includes("�")) return fail(c, 422, `quote ${BAD_ENCODING}`);
@@ -568,6 +569,8 @@ authed.post("/claims/:id/evidence", async (c) => {
   // The stored quote is the page's own text, so it stays verbatim even if the client mangled characters.
   const quote = page.text.slice(match.start, match.end).replace(/\s+/g, " ").trim();
   const host = new URL(page.finalUrl).hostname;
+  if (claim.origin_url && registrable(new URL(claim.origin_url).hostname) === registrable(host))
+    return fail(c, 422, `this claim was quoted from ${registrable(host)}, so evidence from that same site would be circular; cite an independent source`);
 
   const samePage = await db
     .prepare("SELECT id FROM evidence WHERE claim_id = ?1 AND source_url = ?2 AND review_status != 'rejected'")
@@ -844,14 +847,35 @@ admin.post("/veto", async (c) => {
   return c.json({ vetoed: r.meta.changes > 0 });
 });
 
+// Batched because the free plan allows 50 D1 queries per request and each claim takes two.
+admin.post("/recompute", async (c) => {
+  const b = await body(c, z.object({ offset: z.number().int().min(0).default(0) }));
+  if (b instanceof Response) return b;
+  const { results } = await c.env.DB.prepare("SELECT id FROM claims ORDER BY created_at LIMIT 20 OFFSET ?1").bind(b.offset).all<{ id: string }>();
+  for (const r of results) await recomputeClaim(c.env.DB, r.id);
+  return c.json({ recomputed: results.length, next_offset: results.length === 20 ? b.offset + 20 : null });
+});
+
+admin.post("/recheck", async (c) => {
+  const b = await body(c, z.object({ limit: z.number().int().min(1).max(3).default(1) }));
+  if (b instanceof Response) return b;
+  return c.json(await recheckSources(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, b.limit, Date.now(), devRelay(c)));
+});
+
 admin.get("/reports", async (c) => {
   const { results } = await c.env.DB.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT 200").all();
   return c.json({ reports: results });
 });
 
+const adminClaim = z.union([
+  z.string().min(15).max(300),
+  z.object({ text: z.string().min(15).max(300), origin_url: z.string().url().startsWith("https://").max(500) }),
+]);
+
 admin.post("/investigations", async (c) => {
-  const b = await body(c, z.object({ title: z.string().min(10).max(200), brief: z.string().min(20).max(2000), claims: z.array(z.string().min(15).max(300)).max(20) }));
+  const b = await body(c, z.object({ title: z.string().min(10).max(200), brief: z.string().min(20).max(2000), claims: z.array(adminClaim).max(20) }));
   if (b instanceof Response) return b;
-  const invId = await createInvestigation(c.env.DB, null, clean(b.title), clean(b.brief), b.claims.map(clean), null);
+  const claims = b.claims.map((cl) => (typeof cl === "string" ? clean(cl) : { text: clean(cl.text), origin_url: cl.origin_url }));
+  const invId = await createInvestigation(c.env.DB, null, clean(b.title), clean(b.brief), claims, null);
   return c.json({ investigation_id: invId }, 201);
 });

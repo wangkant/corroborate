@@ -194,7 +194,8 @@ def bundle(statements, per=5):
                 "each statement as written; the cited sources listed below may be incomplete. Statement text is quoted from the linked "
                 "Wikipedia articles under CC BY-SA 4.0.\n" + "\n".join(lines)
             )
-            out.append({"title": title + (f" ({n})" if len(items) > per else ""), "brief": brief[:2000], "claims": [s["text"] for s in chunk], "articles": [s["article"] for s in chunk]})
+            claims = [{"text": s["text"], "origin_url": s["url"]} for s in chunk]
+            out.append({"title": title + (f" ({n})" if len(items) > per else ""), "brief": brief[:2000], "claims": claims, "articles": [s["article"] for s in chunk]})
     return out
 
 

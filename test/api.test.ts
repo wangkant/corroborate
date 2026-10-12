@@ -186,6 +186,22 @@ describe("snapshots and the mechanical check", () => {
     expect(none.json.hint).toMatch(/fewer/);
   });
 
+  it("rejects evidence from the site a claim was quoted from", async () => {
+    const a = await register("192.0.2.6");
+    const r = await call("POST", "/api/admin/investigations", {
+      token: ADMIN,
+      body: { title: "Quoted claim circularity check", brief: "Claims quoted from Wikipedia need independent sources.", claims: [{ text: "The Moon's mean distance from Earth is about 384,400 kilometres.", origin_url: "https://en.wikipedia.org/wiki/Moon" }] },
+    });
+    const claim = (await call("GET", `/api/investigations/${r.json.investigation_id}`)).json.claims[0];
+    expect(claim.quoted_from).toBe("https://en.wikipedia.org/wiki/Moon");
+    const circular = await submit(a.token, claim.id, "https://en.wikipedia.org/wiki/Lunar_distance", "mean distance from Earth is about 384,400 kilometres");
+    expect(circular.json.error).toMatch(/circular/);
+    expect((await submit(a.token, claim.id, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.")).status).toBe(201);
+    const page = await call("GET", `/c/${claim.id}`);
+    expect(page.text).toContain("Statement quoted from");
+    expect(page.text).toContain("CC BY-SA 4.0");
+  });
+
   it("marks non-primary sources as context", async () => {
     const a = await register("192.0.2.4");
     const inv = await seedInvestigation();
@@ -257,6 +273,22 @@ describe("blind review, golds and reputation", () => {
     const s = await db().prepare("SELECT traps_caught, reputation FROM agents WHERE id = ?1").bind(r1.id).first<any>();
     expect(s).toMatchObject({ traps_caught: 1, reputation: 1 });
     expect((await call("GET", "/api/reviews/next", { token: author.token })).json.assignment).toBeNull();
+  });
+
+  it("marks accepted evidence stale when its quote disappears from the source, and recomputes the verdict", async () => {
+    const author = await register("10.46.0.1");
+    const [r1, r2] = [await register("10.47.0.1"), await register("10.48.0.1")];
+    const inv = await seedInvestigation();
+    const e = await submit(author.token, inv.claims[0]!, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.");
+    for (const r of [r1, r2]) expect(await reviewTarget(r, "238,855 miles", "yes")).toBe(true);
+    expect((await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<any>()).verdict).toBe("leaning_supported");
+    await db().prepare("UPDATE evidence SET resolved_at = 0 WHERE id = ?1").bind(e.json.evidence_id).run();
+    vi.mocked(globalThis.fetch).mockImplementation(async () => new Response("<p>This page was rewritten.</p>", { headers: { "content-type": "text/html" } }));
+    const res = await call("POST", "/api/admin/recheck", { token: ADMIN, body: {} });
+    expect(res.json).toEqual({ checked: 1, stale: 1 });
+    expect((await db().prepare("SELECT review_status FROM evidence WHERE id = ?1").bind(e.json.evidence_id).first<any>()).review_status).toBe("stale");
+    expect((await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<any>()).verdict).toBe("insufficient");
+    expect((await call("POST", "/api/admin/recompute", { token: ADMIN, body: {} })).json).toMatchObject({ recomputed: 1, next_offset: null });
   });
 
   it("settles split items that cannot find another reviewer after 72 hours", async () => {
