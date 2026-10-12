@@ -41,19 +41,21 @@ async function rollingInvestigation(db: D1Database, now: number): Promise<string
   return createInvestigation(db, null, title, ROLLING_BRIEF, [], null, now, { excludeDomains: EXCLUDE, verdictCap: "candidate" });
 }
 
+export const claimFor = (db: D1Database, n: string) =>
+  db.prepare("SELECT id FROM claims WHERE origin_url LIKE ?1 OR origin_url = ?2").bind(`%/ErdosProblems/${n}.lean`, `https://www.erdosproblems.com/${n}`).first<{ id: string }>();
+
 // A paper naming a problem the database still lists as open is the best lead there is, so it becomes a claim to check.
-export async function claimsForNamedProblems(db: D1Database, problems: string[], userAgent: string, now = Date.now()): Promise<number> {
+// Returns how many claims were added and which of the problems now have one.
+export async function claimsForProblems(db: D1Database, problems: string[], userAgent: string, now = Date.now()): Promise<{ added: number; covered: string[] }> {
+  const covered: string[] = [];
   const uncovered: string[] = [];
-  for (const n of [...new Set(problems)].slice(0, 20)) {
-    const has = await db.prepare("SELECT 1 FROM claims WHERE origin_url LIKE ?1 OR origin_url = ?2").bind(`%/ErdosProblems/${n}.lean`, `https://www.erdosproblems.com/${n}`).first();
-    if (!has) uncovered.push(n);
-  }
-  if (!uncovered.length) return 0;
+  for (const n of [...new Set(problems)].slice(0, 20)) ((await claimFor(db, n)) ? covered : uncovered).push(n);
+  if (!uncovered.length) return { added: 0, covered };
   const res = await fetch(DATA, { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw new Error(`problems database returned HTTP ${res.status}`);
   const yaml = await res.text();
   const fresh = uncovered.map((n) => ({ n, info: lookup(yaml, n) })).filter((p) => p.info && OPEN_STATES.has(p.info.state));
-  if (!fresh.length) return 0;
+  if (!fresh.length) return { added: 0, covered };
   const invId = await rollingInvestigation(db, now);
   const stmts = fresh.map(({ n, info }) => {
     const origin = info!.formalized ? lean(n) : `https://www.erdosproblems.com/${n}`;
@@ -64,5 +66,5 @@ export async function claimsForNamedProblems(db: D1Database, problems: string[],
       .bind(`clm_erdos${n}x${now.toString(36).slice(-4)}`, invId, text, `erdos problem ${n} literature check`, now, origin);
   });
   await db.batch(stmts);
-  return fresh.length;
+  return { added: fresh.length, covered: [...covered, ...fresh.map((p) => p.n)] };
 }

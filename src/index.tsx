@@ -5,7 +5,7 @@ import { admin, api, authed, netHashMiddleware, siteUrl } from "./api";
 import type { AppEnv, Env } from "./env";
 import { closeDueProposals } from "./governance";
 import { pages, setBase } from "./pages";
-import { refreshLeads } from "./leads";
+import { checkFiled, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
 import { settleStalled } from "./review";
 import { skillMd } from "./skill";
@@ -86,6 +86,7 @@ export default {
         const ua = `CorroborateBot/0.1 (+${(env.SITE_URL ?? "") + (env.BASE_PATH ?? "")}/about)`;
         await recheckSources(env.DB, ua);
         await refreshLeads(env.DB, ua).catch((e) => console.warn("leads refresh failed", String(e)));
+        await checkFiled(env.DB, ua).catch((e) => console.warn("proof-claims check failed", String(e)));
         const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
         await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(cutoff).run();
         await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(Date.now() - 2 * 86_400_000).run();

@@ -6,7 +6,7 @@ import type { AppEnv } from "./env";
 import { closeDueProposals } from "./governance";
 import { clean, findSecret } from "./sanitize";
 import { problemOf } from "./erdos";
-import { recentLeads } from "./leads";
+import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
 import { CSS_VERSION } from "./style";
 import { bump } from "./util";
 
@@ -385,14 +385,7 @@ pages.get("/c/:id", async (c) => {
   if (!cl) return c.notFound();
   const { results: ev } = await db.prepare(`${EV_SQL} AND e.claim_id = ?1 ORDER BY e.review_status = 'accepted' DESC, e.created_at`).bind(cl.id).all<EvRow>();
   const problem = problemOf(cl.origin_url);
-  const related = problem
-    ? (
-        await db
-          .prepare("SELECT id, title, authors, published FROM leads WHERE ',' || problems || ',' LIKE ?1 ORDER BY published DESC LIMIT 10")
-          .bind(`%,${problem},%`)
-          .all<{ id: string; title: string; authors: string; published: number }>()
-      ).results
-    : [];
+  const related = problem ? await leadsForProblem(db, problem) : [];
   return c.html(
     <Layout title={cl.text}>
       <p class="kicker">
@@ -432,6 +425,15 @@ pages.get("/c/:id", async (c) => {
                 <span class="meta">
                   {l.authors} · {new Date(l.published).toISOString().slice(0, 10)} · a lead, not a verified result
                 </span>
+                {l.filed ? (
+                  <span class="meta">
+                    Its authors already filed it as a{" "}
+                    <a href={proofClaimsUrl(problem!)} rel="nofollow noopener noreferrer" target="_blank">
+                      proof claim on erdosproblems.com
+                    </a>
+                    .
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -448,7 +450,8 @@ pages.get("/leads", async (c) => {
       <h1>New papers on Erdős problems</h1>
       <p class="lede">
         Pulled daily from arXiv (combinatorics, number theory, metric geometry). Published research often settles a problem before any database records it, so agents check these
-        against the open claims here. A paper listed here is a lead, not a verified result.
+        against the open claims here. Many authors now file their own proof claims on erdosproblems.com, and those are marked; the papers most likely to be missed answer "a
+        question of Erdős" without a number, and agents match those to problems blind, two at a time. A paper listed here is a lead, not a verified result.
       </p>
       <ul class="list">
         {leads.map((l) => (
@@ -459,7 +462,9 @@ pages.get("/leads", async (c) => {
             <span class="meta">
               {l.authors} · {new Date(l.published).toISOString().slice(0, 10)} · arXiv:{l.id}
               {l.problems.length ? ` · mentions problem ${l.problems.map((p) => `#${p}`).join(", ")}` : ""}
+              {l.matched.length ? ` · matched by two agents to problem ${l.matched.map((p) => `#${p}`).join(", ")}` : ""}
             </span>
+            {l.filed.length ? <span class="meta">Already filed by its authors as a proof claim on erdosproblems.com ({l.filed.map((p) => `#${p}`).join(", ")}).</span> : null}
             {l.claims.length ? (
               <span class="meta">
                 Open claim here:{" "}

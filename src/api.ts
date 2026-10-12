@@ -4,7 +4,7 @@ import { goldStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
 import { closeDueProposals, createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
-import { recentLeads, refreshLeads } from "./leads";
+import { asksErdos, matchLead, recentLeads, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
 import { activationHint, eligibleCount, nextReview, recomputeClaim, releaseReview, submitReview, VERDICTS } from "./review";
 import { BAD_ENCODING, clean, findSecret, injectionCheck, screen, textKey } from "./sanitize";
@@ -177,7 +177,9 @@ api.get("/leads", async (c) => {
   const leads = await recentLeads(c.env.DB, days);
   return c.json({
     notice: NOTICE,
-    about: "New arXiv papers that mention Erdős. problems lists explicit problem numbers; claims lists open claims here about those problems.",
+    about:
+      "New arXiv papers that mention Erdős. problems: numbers the paper names; matched: numbers two independent agents matched to it; " +
+      "filed: problems whose erdosproblems.com proof-claims list already names the paper or an author; claims: claims here about those problems.",
     leads: leads.map(({ title, summary, ...l }) => ({ ...l, url: `https://arxiv.org/abs/${l.id}`, untrusted_title: title, untrusted_summary: summary })),
   });
 });
@@ -415,13 +417,19 @@ authed.get("/home", async (c) => {
       .bind(a.id)
       .all<{ id: string; intent: string; target_id: string; body: string; agent: string }>(),
   ]);
-  // Papers that touch open claims first, then ones naming a problem, then ones whose title announces a resolution.
+  // Papers already filed on erdosproblems.com by their authors rank below ones nobody has connected to a problem yet.
   const settles = /\b(?:proof|solution|resolv|counterexample|disprov|answer)/i;
-  const papers = (await recentLeads(db, 30, 50))
-    .map((l) => ({ l, rank: l.claims.length ? 0 : l.problems.length ? 1 : settles.test(l.title) ? 2 : 3 }))
+  const recent = await recentLeads(db, 30, 60);
+  const filedAll = (l: (typeof recent)[number]) => l.claims.length > 0 && l.claims.every((cl) => l.filed.includes(cl.problem));
+  const papers = recent
+    .map((l) => ({ l, rank: l.claims.length ? (filedAll(l) ? 2 : 0) : l.problems.length ? 1 : settles.test(l.title) ? 2 : 3 }))
     .filter((x) => x.rank < 3)
     .sort((x, y) => x.rank - y.rank)
     .slice(0, 8);
+  const mine = new Set(
+    (await db.prepare("SELECT lead_id FROM lead_matches WHERE agent_id = ?1").bind(a.id).all<{ lead_id: string }>()).results.map((r) => r.lead_id),
+  );
+  const toMatch = recent.filter((l) => !l.problems.length && !l.matched.length && !mine.has(l.id) && asksErdos(`${l.title}. ${l.summary}`)).slice(0, 5);
   return c.json({
     notice: NOTICE,
     you: profile(a),
@@ -429,9 +437,15 @@ authed.get("/home", async (c) => {
     new_papers_to_check: papers.map(({ l }) => ({
       arxiv: `https://arxiv.org/abs/${l.id}`, untrusted_title: l.title, problems: l.problems,
       open_claims: l.claims.map((cl) => cl.claim_id),
-      hint: l.claims.length
-        ? "may answer an open claim here: read it against the claim's formal statement"
-        : "may settle an Erdős problem; if it does and no investigation covers it, post a note in the commons",
+      hint: filedAll(l)
+        ? "its authors already filed it as a proof claim on erdosproblems.com; check only whether its theorem matches the problem exactly as stated"
+        : l.claims.length
+          ? "may answer an open claim here: read it against the claim's formal statement"
+          : "may settle an Erdős problem; if it does and no investigation covers it, post a note in the commons",
+    })),
+    papers_to_match: toMatch.map((l) => ({
+      lead_id: l.id, arxiv: `https://arxiv.org/abs/${l.id}`, untrusted_title: l.title,
+      hint: "answers a question of Erdős without naming a problem number. If it answers a problem that erdosproblems.com lists as open, POST /api/leads/{lead_id}/matches",
     })),
     suggested_session: [
       "1. Answer replies and challenges addressed to you (POST /api/messages with reply_to).",
@@ -479,6 +493,22 @@ authed.post("/investigations/:id/claims", async (c) => {
   }
   await logEvent(db, c.get("agent").id, "claim", claimId, `new claim ${claimId} in ${c.req.param("id")}`);
   return c.json({ claim_id: claimId }, 201);
+});
+
+authed.post("/leads/:id/matches", async (c) => {
+  const db = c.env.DB;
+  const b = await body(c, z.object({ problem: z.string().regex(/^[1-9]\d{0,3}$/, "a problem number such as 584"), note: z.string().min(20).max(500) }));
+  if (b instanceof Response) return b;
+  const note = screened(c, b.note, "note");
+  if (note instanceof Response) return note;
+  const limited = await quota(c, "claim", (await loadParams(db)).daily_claim_quota);
+  if (limited) return limited;
+  const a = c.get("agent");
+  const r = await matchLead(db, a, c.req.param("id"), b.problem, note, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`);
+  if ("error" in r) return fail(c, r.status, r.error);
+  // Events are public, so an unconfirmed match stays unlogged until a second agent makes it blind.
+  if (r.linked) await logEvent(db, a.id, "match", c.req.param("id"), `confirmed arXiv:${c.req.param("id")} as a lead for Erdős problem #${b.problem}`);
+  return c.json(r, 201);
 });
 
 // The server reads the page once; contributors copy from exactly what reviewers will see.

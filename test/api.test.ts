@@ -1,5 +1,6 @@
 ﻿import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { checkFiled } from "../src/leads";
 
 const BASE = "https://corroborate.test/corroborate";
 const ADMIN = "test-admin-token";
@@ -74,7 +75,7 @@ async function reviewTarget(r: { token: string }, quoteFragment: string, verdict
   return false;
 }
 
-const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads"];
+const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads", "lead_matches"];
 
 beforeEach(async () => {
   await db().batch(TABLES.map((t) => db().prepare(`DELETE FROM ${t}`)));
@@ -99,6 +100,8 @@ beforeEach(async () => {
         `- number: "2"\n  informal_status:\n    state: "disproved"\n  formalized:\n    state: "yes"\n- number: "786"\n  informal_status:\n    state: "open"\n    last_update: "2025-08-31"\n  formalized:\n    state: "no"\n- number: "900"\n  informal_status:\n    state: "open"\n`,
         { headers: { "content-type": "text/plain" } },
       );
+    if (url === "https://www.erdosproblems.com/forum/thread/786/proof-claims") return html("<p>A proof claimed by D.&nbsp;Person (using a model).</p>");
+    if (url === "https://www.erdosproblems.com/forum/thread/900/proof-claims") return html("<p>There are 0 proof claims for this problem.</p>");
     if (url.startsWith("https://source.example/pdf")) return new Response("%PDF", { headers: { "content-type": "application/pdf" } });
     if (url.startsWith("https://source.example/redirect-internal")) return new Response(null, { status: 302, headers: { location: "https://127.0.0.1/admin" } });
     return new Response("not found", { status: 404 });
@@ -270,6 +273,44 @@ describe("snapshots and the mechanical check", () => {
     expect(home.json.new_papers_to_check.map((p: any) => p.arxiv)).toContain("https://arxiv.org/abs/2610.11642");
     expect((await call("GET", "/leads")).text).toContain("Clique partitions, answering Erdős Problem #81");
     expect((await call("GET", `/c/${claimId}`)).text).toContain("New papers that mention this problem");
+  });
+
+  it("links unnumbered papers to problems only when two independent agents match them blind", async () => {
+    const [a, b] = [await register("192.0.2.20"), await register("192.0.3.20")];
+    const twin = await register("192.0.2.21");
+    await call("POST", "/api/admin/leads", { token: ADMIN });
+    const match = (t: string, lead: string, problem: string) =>
+      call("POST", `/api/leads/${lead}/matches`, { token: t, body: { problem, note: "Theorem 1 disproves exactly the statement on the problem page." } });
+    expect((await call("GET", "/api/home", { token: a.token })).json.papers_to_match.map((p: any) => p.lead_id)).toEqual(["2610.11642"]);
+    expect((await match(a.token, "2610.11642", "900")).json).toMatchObject({ recorded: true, linked: false });
+    expect((await match(a.token, "2610.11642", "900")).status).toBe(409);
+    expect((await match(twin.token, "2610.11642", "900")).json).toMatchObject({ independent_agreements: 0, linked: false });
+    expect((await db().prepare("SELECT COUNT(*) AS n FROM events WHERE summary LIKE '%2610.11642%'").first<any>()).n).toBe(0);
+    expect((await call("GET", "/api/home", { token: a.token })).json.papers_to_match).toEqual([]);
+    const linked = await match(b.token, "2610.11642", "900");
+    expect(linked.json).toMatchObject({ independent_agreements: 2, linked: true });
+    expect((await call("GET", `/api/claims/${linked.json.claim_id}`)).json.claim.quoted_from).toBe("https://www.erdosproblems.com/900");
+    const lead = (await call("GET", "/api/leads?days=120")).json.leads.find((l: any) => l.id === "2610.11642");
+    expect(lead).toMatchObject({ matched: ["900"], claims: [{ problem: "900", claim_id: linked.json.claim_id }] });
+    expect((await match(a.token, "2609.32140", "2")).status).toBe(409);
+    await match(a.token, "2609.20871", "2");
+    expect((await match(b.token, "2609.20871", "2")).json.message).toMatch(/not listed as open/);
+    expect((await match(a.token, "2609.20871", "abc")).status).toBe(400);
+    expect((await match(a.token, "2601.00000", "5")).status).toBe(404);
+  });
+
+  it("marks papers whose authors already filed a proof claim on erdosproblems.com", async () => {
+    const a = await register("192.0.2.22");
+    await call("POST", "/api/admin/leads", { token: ADMIN });
+    expect(await checkFiled(db(), "test-ua", Date.now(), 10)).toBe(3);
+    const leads = (await call("GET", "/api/leads?days=120")).json.leads;
+    expect(leads.find((l: any) => l.id === "2609.37471").filed).toEqual(["786"]);
+    expect(leads.find((l: any) => l.id === "2609.20871").filed).toEqual([]);
+    const paper = (await call("GET", "/api/home", { token: a.token })).json.new_papers_to_check.find((p: any) => p.arxiv.endsWith("2609.37471"));
+    expect(paper.hint).toMatch(/already filed/);
+    expect((await call("GET", "/leads")).text).toContain("Already filed by its authors");
+    const claimId = leads.find((l: any) => l.id === "2609.37471").claims[0].claim_id;
+    expect((await call("GET", `/c/${claimId}`)).text).toContain("proof claim on erdosproblems.com");
   });
 
   it("marks non-primary sources as context", async () => {
