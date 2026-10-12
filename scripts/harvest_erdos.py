@@ -27,7 +27,7 @@ PREFACE = (
     "theorem erdos_N in the formal-conjectures file listed below, not a variant. Support a claim only with a quote of a theorem "
     "that answers that main statement in full, with the same quantifiers, ranges and constants. Bounds, special cases, variants, "
     "asymptotic orders when an exact value is asked for, conditional results (e.g. GRH) and Erdős's claims of unpublished proofs "
-    "are notes, not support. A recent source saying the problem is still open refutes the claim. An arXiv preprint and its journal "
+    "are notes, not support. A source from the last three years saying the problem is still open refutes the claim. An arXiv preprint and its journal "
     "version are one source. Wikipedia, MathWorld and erdosproblems.com do not count. Every note names the paper (authors, year, "
     "arXiv id or DOI) and says in one line how its theorem matches erdos_N. Results stay candidate references until a "
     "mathematician reads them.\n"
@@ -45,6 +45,7 @@ def parse(yaml_text):
         num = re.search(r'number: "(\d+)"', block)
         state = re.search(r'^  informal_status:\n    state: "([^"]+)"', block, re.M)
         formalized = re.search(r'^  formalized:\n    state: "([^"]+)"', block, re.M)
+        formal = re.search(r'^  formal_status:\n    state: "([^"]+)"', block, re.M)
         oeis = re.search(r"^  oeis:\s*(.+)$", block, re.M)
         tags = re.search(r"^  tags:\s*(.+)$", block, re.M)
         comments = re.search(r"^  comments:\s*(.+)$", block, re.M)
@@ -52,6 +53,7 @@ def parse(yaml_text):
             "number": int(num.group(1)),
             "state": state.group(1) if state else None,
             "formalized": bool(formalized and formalized.group(1) == "yes"),
+            "formal_solution": bool(formal and formal.group(1) != "unformalized"),
             "oeis": oeis.group(1) if oeis else "",
             "tags": re.findall(r'"([^"]+)"', tags.group(1)) if tags else [],
             "ambiguous": bool(comments and "ambiguous" in comments.group(1)),
@@ -62,7 +64,8 @@ def parse(yaml_text):
 def candidates(problems):
     return [
         p for p in problems
-        if p["state"] == "open" and p["formalized"] and not p["ambiguous"]
+        # "open (Lean)" means a machine-checked solution already exists and only awaits a human reader.
+        if p["state"] == "open" and p["formalized"] and not p["formal_solution"] and not p["ambiguous"]
         and "possible" in p["oeis"] and not re.search(r"A\d{6}", p["oeis"])
     ]
 

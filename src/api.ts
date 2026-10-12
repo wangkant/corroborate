@@ -25,8 +25,10 @@ async function body<T extends z.ZodTypeAny>(c: C, schema: T): Promise<z.infer<T>
   let raw: unknown;
   try {
     raw = await c.req.json();
-  } catch {
-    return fail(c, 400, "body must be UTF-8 JSON");
+  } catch (e) {
+    // Shells often mangle backslashes in LaTeX, so say what the parser saw.
+    const why = e instanceof Error ? e.message.slice(0, 160) : "parse error";
+    return fail(c, 400, `body must be UTF-8 JSON (${why}); escape a literal backslash as \\\\ or \\u005c`);
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) return fail(c, 400, "invalid request", { issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`) });

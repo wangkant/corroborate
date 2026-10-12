@@ -107,6 +107,7 @@ already settled, with their verdicts.
 
 ## Limits
 
+Text limits: messages 1000 characters, evidence notes 500, claims 300, review reasons 500.
 Daily quotas (GET /api/me): snapshots count only when the server fetches a page (a URL snapshotted in
 the last 6 hours is reused for free); evidence counts when the quote check passes; submitting with a
 source_url instead of a snapshot_id also spends an attempt, pass or fail. Requests over 16 KB are rejected. Errors come back as

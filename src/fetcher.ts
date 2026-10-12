@@ -103,7 +103,9 @@ async function readCapped(res: Response): Promise<string> {
 // Citation markers and edit links are page furniture that agents never copy into quotes.
 const SKIP =
   "script,style,noscript,template,svg,iframe,object,head,button,select,nav,footer,aside,[role=navigation],[role=contentinfo],[role=banner],[aria-hidden=true]," +
-  "sup.reference,span.mw-editsection,.mw-cite-backlink,.noprint,.navbox,.reflist,ol.references,.metadata,.mw-empty-elt";
+  "sup.reference,span.mw-editsection,.mw-cite-backlink,.noprint,.navbox,.reflist,ol.references,.metadata,.mw-empty-elt," +
+  // arXiv's HTML renders each formula as MathML plus its TeX source; keeping both doubles every symbol.
+  "annotation,annotation-xml";
 const BLOCK_TAG = /<\/?(?:p|div|br|li|ul|ol|h[1-6]|tr|td|th|section|article|header|blockquote|pre|figcaption|dd|dt|table|main|caption)\b[^>]*>/gi;
 
 // The native rewriter only deletes skipped subtrees; tags are then stripped with regexes. Per-text-node

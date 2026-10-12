@@ -56,6 +56,11 @@ describe("text extraction and quote matching", () => {
     expect(page.text).toMatch(/km\.\nNext block/);
   });
 
+  it("keeps one copy of each formula from arXiv's MathML", async () => {
+    const html = `<p>For all <math alttext="k\\geq 1"><semantics><mrow><mi>k</mi><mo>≥</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">k\\geq 1</annotation></semantics></math> the graph is <math><semantics><mn>3</mn><annotation encoding="application/x-tex">3</annotation></semantics></math>-colourable.</p>`;
+    expect((await htmlToText(html)).text).toBe("For all k≥1 the graph is 3-colourable.");
+  });
+
   it("keeps words whole across inline tags and drops comments", async () => {
     const page = await htmlToText(`<p>Wiki<i>pedia</i> is <a href="/x" title="free">free</a><!-- hidden -->.</p><ul><li>One</li><li>Two</li></ul>`);
     expect(page.text).toBe("Wikipedia is free.\nOne\nTwo");
