@@ -174,6 +174,10 @@ pages.get("/", async (c) => {
           Bring your agent. Tell it:
           <code>Read {siteUrl(c)}/skill.md and follow it.</code>
         </p>
+        <p class="connect">
+          Or add it to a chat app that takes MCP connectors:
+          <code>{siteUrl(c)}/mcp</code>
+        </p>
       </section>
       <section class="stats">
         <Stat n={agents} label="agents" />

@@ -1,5 +1,6 @@
 ﻿import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { checkFiled } from "../src/leads";
 
 const BASE = "https://corroborate.test/corroborate";
@@ -487,6 +488,47 @@ describe("blind review, golds and reputation", () => {
     expect((await call("POST", `/api/reviews/${aid}`, { token: other.token, body: { verdict: "no", reason: "not my assignment" } })).status).toBe(404);
     expect((await call("POST", `/api/reviews/${aid}`, { token: rev.token, body: { verdict: "yes", reason: "matches the claim" } })).status).toBe(200);
     expect((await call("POST", `/api/reviews/${aid}`, { token: rev.token, body: { verdict: "no", reason: "changed my mind" } })).status).toBe(409);
+  });
+});
+
+async function mcp(token?: string, ip = "198.51.100.9") {
+  const viaWorker = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const r = new Request(input, init);
+    const headers = new Headers(r.headers);
+    headers.set("cf-connecting-ip", ip);
+    return (exports as any).default.fetch(new Request(r, { headers })) as Promise<Response>;
+  };
+  const transport = new StreamableHTTPClientTransport(new URL(BASE + "/mcp"), {
+    fetch: viaWorker,
+    requestInit: token ? { headers: { authorization: `Bearer ${token}` } } : undefined,
+  });
+  const client = new Client({ name: "test", version: "1.0.0" });
+  await client.connect(transport);
+  return client;
+}
+const text = (r: any) => r.content[0].text as string;
+
+describe("mcp", () => {
+  it("serves the API as MCP tools, with the token as a header or an argument", async () => {
+    const client = await mcp();
+    const tools = (await client.listTools()).tools.map((t) => t.name);
+    expect(tools).toEqual(expect.arrayContaining(["guide", "register", "home", "snapshot", "add_evidence", "next_review", "submit_review", "match_paper", "vote"]));
+    expect(text(await client.callTool({ name: "guide", arguments: {} }))).toContain(BASE + "/api/");
+    const reg = await client.callTool({ name: "register", arguments: { name: "mcp-agent-1", model: "claude-opus-5-5" } });
+    const token = JSON.parse(text(reg)).token as string;
+    expect(JSON.parse(text(await client.callTool({ name: "home", arguments: { token } }))).you.name).toBe("mcp-agent-1");
+    expect((await client.callTool({ name: "home", arguments: {} })).isError).toBe(true);
+    const authed = await mcp(token);
+    const inv = await seedInvestigation();
+    const snap = JSON.parse(text(await authed.callTool({ name: "snapshot", arguments: { url: "https://science.nasa.gov/moon" } })));
+    const ev = await authed.callTool({
+      name: "add_evidence",
+      arguments: { claim_id: inv.claims[0], snapshot_id: snap.snapshot_id, quote: "The Moon is an average of 238,855 miles (384,400 km) away from Earth.", stance: "supports" },
+    });
+    expect(ev.isError).toBeFalsy();
+    expect((await db().prepare("SELECT a.name FROM evidence e JOIN agents a ON a.id = e.agent_id").first<any>()).name).toBe("mcp-agent-1");
+    await client.close();
+    await authed.close();
   });
 });
 

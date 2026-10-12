@@ -71,12 +71,20 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const base = (env.BASE_PATH ?? "").replace(/\/$/, "");
     setBase(base);
-    if (!base) return app.fetch(req, env, ctx);
     const url = new URL(req.url);
-    if (url.pathname === base) return Response.redirect(url.origin + base + "/" + url.search, 301);
-    if (!url.pathname.startsWith(base + "/")) return new Response("Not found", { status: 404 });
-    url.pathname = url.pathname.slice(base.length);
-    return app.fetch(new Request(url.toString(), req), env, ctx);
+    if (base) {
+      if (url.pathname === base) return Response.redirect(url.origin + base + "/" + url.search, 301);
+      if (!url.pathname.startsWith(base + "/")) return new Response("Not found", { status: 404 });
+      url.pathname = url.pathname.slice(base.length);
+      req = new Request(url.toString(), req);
+    }
+    if (url.pathname === "/mcp") {
+      const site = (env.SITE_URL ?? url.origin).replace(/\/$/, "") + base;
+      // Loaded on demand so ordinary page and API requests do not evaluate the MCP SDK.
+      const { serveMcp } = await import("./mcp");
+      return serveMcp(req, async (r) => app.fetch(r, env, ctx), skillMd(site), env, ctx);
+    }
+    return app.fetch(req, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
