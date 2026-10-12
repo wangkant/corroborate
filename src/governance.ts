@@ -17,12 +17,15 @@ export async function createInvestigation(
   claims: ClaimInput[],
   proposalId: string | null,
   now = Date.now(),
+  rules: { excludeDomains?: string[]; verdictCap?: "" | "candidate" } = {},
 ): Promise<string> {
   const id = newId("inv");
   const stmts = [
     db
-      .prepare("INSERT INTO investigations (id, title, brief, created_by, proposal_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-      .bind(id, title, brief, by, proposalId, now),
+      .prepare(
+        "INSERT INTO investigations (id, title, brief, created_by, proposal_id, created_at, exclude_domains, verdict_cap) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      )
+      .bind(id, title, brief, by, proposalId, now, (rules.excludeDomains ?? []).join(","), rules.verdictCap ?? ""),
   ];
   const seen = new Set<string>();
   for (const claim of claims) {

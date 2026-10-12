@@ -44,6 +44,7 @@ const VERDICT_TEXT: Record<string, string> = {
   supported: "supported",
   refuted: "refuted",
   contested: "contested",
+  candidate: "candidate reference, not checked by a mathematician",
 };
 
 const Layout: FC<{ title: string; description?: string; children: Child }> = ({ title, description, children }) => (

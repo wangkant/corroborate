@@ -416,7 +416,9 @@ authed.get("/home", async (c) => {
     claims_needing_evidence: needEvidence.results.map((r) => ({
       claim_id: r.id, investigation_id: r.investigation_id, untrusted_claim: r.text, verdict: r.verdict, evidence_in_review: r.pending, evidence_accepted: r.accepted,
       needs:
-        r.verdict === "contested"
+        r.verdict === "candidate"
+          ? "a check of the candidate reference: independent confirmation, or a source showing it does not answer the question as stated"
+          : r.verdict === "contested"
           ? "sources disagree; more primary evidence on either side helps"
           : r.verdict.startsWith("leaning")
             ? "a primary source from another domain, found by a different agent than the existing one"
@@ -537,9 +539,11 @@ authed.post("/claims/:id/evidence", async (c) => {
   const b = await body(c, evidenceSchema);
   if (b instanceof Response) return b;
   const claim = await db
-    .prepare("SELECT c.id, c.origin_url FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status = 'open'")
+    .prepare(
+      "SELECT c.id, c.origin_url, i.exclude_domains FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status = 'open'",
+    )
     .bind(c.req.param("id"))
-    .first<{ id: string; origin_url: string | null }>();
+    .first<{ id: string; origin_url: string | null; exclude_domains: string }>();
   if (!claim) return fail(c, 404, "no open claim with that id");
   const p = await loadParams(db);
   if (b.quote.includes("�")) return fail(c, 422, `quote ${BAD_ENCODING}`);
@@ -571,6 +575,8 @@ authed.post("/claims/:id/evidence", async (c) => {
   const host = new URL(page.finalUrl).hostname;
   if (claim.origin_url && registrable(new URL(claim.origin_url).hostname) === registrable(host))
     return fail(c, 422, `this claim was quoted from ${registrable(host)}, so evidence from that same site would be circular; cite an independent source`);
+  if (claim.exclude_domains.split(",").includes(registrable(host)))
+    return fail(c, 422, `this investigation does not accept evidence from ${registrable(host)}; its brief explains which sources count`);
 
   const samePage = await db
     .prepare("SELECT id FROM evidence WHERE claim_id = ?1 AND source_url = ?2 AND review_status != 'rejected'")
@@ -873,9 +879,21 @@ const adminClaim = z.union([
 ]);
 
 admin.post("/investigations", async (c) => {
-  const b = await body(c, z.object({ title: z.string().min(10).max(200), brief: z.string().min(20).max(2000), claims: z.array(adminClaim).max(20) }));
+  const b = await body(
+    c,
+    z.object({
+      title: z.string().min(10).max(200),
+      brief: z.string().min(20).max(2000),
+      claims: z.array(adminClaim).max(20),
+      exclude_domains: z.array(z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/)).max(20).optional(),
+      verdict_cap: z.enum(["", "candidate"]).optional(),
+    }),
+  );
   if (b instanceof Response) return b;
   const claims = b.claims.map((cl) => (typeof cl === "string" ? clean(cl) : { text: clean(cl.text), origin_url: cl.origin_url }));
-  const invId = await createInvestigation(c.env.DB, null, clean(b.title), clean(b.brief), claims, null);
+  const invId = await createInvestigation(c.env.DB, null, clean(b.title), clean(b.brief), claims, null, Date.now(), {
+    excludeDomains: b.exclude_domains,
+    verdictCap: b.verdict_cap,
+  });
   return c.json({ investigation_id: invId }, 201);
 });

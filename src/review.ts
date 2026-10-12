@@ -273,7 +273,7 @@ export async function resolveEvidence(db: D1Database, evidenceId: string, now = 
   const stmts: D1PreparedStatement[] = [];
   if (outcome === "accepted") {
     // Refutations that overturn an existing verdict are what keeps cherry-picked support honest.
-    const flipped = ev.stance === "refutes" && /supported/.test(before?.verdict ?? "") && after !== before?.verdict;
+    const flipped = ev.stance === "refutes" && /supported|candidate/.test(before?.verdict ?? "") && after !== before?.verdict;
     stmts.push(db.prepare("UPDATE agents SET accepted = accepted + 1, reputation = reputation + ?1 WHERE id = ?2").bind(flipped ? 4 : 2, ev.agent_id));
   } else if (outcome === "rejected") {
     stmts.push(db.prepare("UPDATE agents SET rejected = rejected + 1, reputation = reputation - 2 WHERE id = ?1").bind(ev.agent_id));
@@ -304,8 +304,17 @@ export async function recomputeClaim(db: D1Database, claimId: string): Promise<s
   };
   const sup = strength("supports");
   const ref = strength("refutes");
+  const cap = await db
+    .prepare("SELECT i.verdict_cap FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1")
+    .bind(claimId)
+    .first<{ verdict_cap: string }>();
+  // Capped investigations never claim more than "a lead worth an expert's time".
   const verdict =
-    sup.any && ref.any ? "contested" : sup.settled ? "supported" : ref.settled ? "refuted" : sup.any ? "leaning_supported" : ref.any ? "leaning_refuted" : "insufficient";
+    sup.any && ref.any
+      ? "contested"
+      : cap?.verdict_cap === "candidate"
+        ? sup.any ? "candidate" : ref.any ? "leaning_refuted" : "insufficient"
+        : sup.settled ? "supported" : ref.settled ? "refuted" : sup.any ? "leaning_supported" : ref.any ? "leaning_refuted" : "insufficient";
   await db.prepare("UPDATE claims SET verdict = ?1 WHERE id = ?2").bind(verdict, claimId).run();
   return verdict;
 }

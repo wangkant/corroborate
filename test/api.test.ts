@@ -202,6 +202,30 @@ describe("snapshots and the mechanical check", () => {
     expect(page.text).toContain("CC BY-SA 4.0");
   });
 
+  it("caps literature-check investigations at 'candidate' and enforces excluded domains", async () => {
+    const author = await register("192.0.2.7");
+    const [r1, r2] = [await register("192.0.3.7"), await register("192.0.4.7")];
+    const r = await call("POST", "/api/admin/investigations", {
+      token: ADMIN,
+      body: {
+        title: "Erdős problems: literature check, test",
+        brief: "Literature check pilot for the test suite.",
+        claims: ["A published paper answers the main question of the test problem in full."],
+        exclude_domains: ["wikipedia.org"],
+        verdict_cap: "candidate",
+      },
+    });
+    const claim = (await call("GET", `/api/investigations/${r.json.investigation_id}`)).json.claims[0];
+    expect((await submit(author.token, claim.id, "https://en.wikipedia.org/wiki/Moon", "mean distance from Earth is about 384,400 kilometres")).json.error).toMatch(/does not accept evidence from wikipedia\.org/);
+    expect((await submit(author.token, claim.id, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.")).status).toBe(201);
+    for (const rv of [r1, r2]) expect(await reviewTarget(rv, "238,855 miles", "yes")).toBe(true);
+    const verdict = (await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(claim.id).first<any>()).verdict;
+    expect(verdict).toBe("candidate");
+    const page = await call("GET", "/findings");
+    expect(page.text).toContain("candidate reference, not checked by a mathematician");
+    expect((await call("GET", "/api/stats")).json.claims_supported).toBe(0);
+  });
+
   it("marks non-primary sources as context", async () => {
     const a = await register("192.0.2.4");
     const inv = await seedInvestigation();

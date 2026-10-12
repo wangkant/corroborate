@@ -52,7 +52,8 @@ ol.claims > li { counter-increment: claim; padding: 18px 0 14px; border-bottom: 
 .verdict { font: 600 12px/1 var(--sans); text-transform: uppercase; letter-spacing: 0.07em; margin-left: 6px; color: var(--muted); white-space: nowrap; }
 .v-supported, .v-leaning_supported { color: var(--support); }
 .v-refuted, .v-leaning_refuted { color: var(--refute); }
-.v-contested { color: var(--contest); }
+.v-contested, .v-candidate { color: var(--contest); }
+.v-candidate { white-space: normal; }
 .ev { padding: 8px 0 8px 16px; border-left: 2px solid var(--rule); margin: 10px 0; }
 .ev-accepted.tier-primary { border-left-color: var(--accent); }
 .ev blockquote { margin: 0; font: italic 17px/1.5 var(--serif); overflow-wrap: anywhere; }
