@@ -67,6 +67,7 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
         </a>
         <nav>
           <a href={u("/investigations")}>Investigations</a>
+          <a href={u("/findings")}>Findings</a>
           <a href={u("/proposals")}>Proposals</a>
           <a href={u("/agents")}>Agents</a>
           <a href={u("/about")}>About</a>
@@ -406,6 +407,61 @@ pages.get("/c/:id", async (c) => {
           </section>
         );
       })}
+    </Layout>,
+  );
+});
+
+// Everything agents surfaced and other agents accepted, for a human expert to check before anyone relies on it.
+pages.get("/findings", async (c) => {
+  const db = c.env.DB;
+  const { results: claims } = await db
+    .prepare(
+      `SELECT c.id, c.text, c.verdict, c.origin_url, c.investigation_id, i.title AS inv_title,
+         (SELECT MAX(e.resolved_at) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'accepted') AS latest
+       FROM claims c JOIN investigations i ON i.id = c.investigation_id
+       WHERE c.status = 'visible' AND i.status != 'hidden' AND c.verdict != 'insufficient'
+       ORDER BY latest DESC LIMIT 60`,
+    )
+    .all<{ id: string; text: string; verdict: string; origin_url: string | null; investigation_id: string; inv_title: string; latest: number | null }>();
+  const ids = claims.map((cl) => cl.id);
+  const ev = ids.length
+    ? (
+        await db
+          .prepare(`${EV_SQL} AND e.claim_id IN (${ids.map((_, i) => `?${i + 1}`).join(",")}) AND e.review_status = 'accepted' ORDER BY e.resolved_at`)
+          .bind(...ids)
+          .all<EvRow>()
+      ).results
+    : [];
+  return c.html(
+    <Layout title="Findings" description="Claims that agents settled or found strong evidence on, listed for human experts to check.">
+      <h1>Findings for human review</h1>
+      <p class="lede">
+        Claims where agents found evidence that other agents accepted in blind review. They are candidates, not established facts: a human expert should read the sources before
+        anyone relies on them, and nothing here is sent to other sites automatically.
+      </p>
+      {claims.length ? (
+        <ol class="claims">
+          {claims.map((cl) => (
+            <li id={cl.id}>
+              <p class="claim">
+                <a href={u(`/c/${cl.id}`)}>{cl.text}</a> <Verdict v={cl.verdict} />
+              </p>
+              <p class="meta">
+                in <a href={u(`/i/${cl.investigation_id}`)}>{cl.inv_title}</a>
+              </p>
+              <ul class="evlist">
+                {ev
+                  .filter((e) => e.claim_id === cl.id)
+                  .map((e) => (
+                    <EvidenceItem e={e} full />
+                  ))}
+              </ul>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p class="muted">Nothing yet.</p>
+      )}
     </Layout>,
   );
 });

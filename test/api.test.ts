@@ -255,6 +255,10 @@ describe("blind review, golds and reputation", () => {
 
     const check = await call("GET", "/api/check?q=moon+distance+384");
     expect(check.json.results[0]).toMatchObject({ claim_id: inv.claims[0], verdict: "supported" });
+    const findings = await call("GET", "/findings");
+    expect(findings.status).toBe(200);
+    expect(findings.text).toContain("mean distance from Earth");
+    expect(findings.text).toContain("238,855 miles");
     const fever = await call("GET", "/api/export/fever.jsonl");
     expect(JSON.parse(fever.text.trim().split("\n")[0]!)).toMatchObject({ label: "SUPPORTS", ai_generated: true, human_reviewed: false });
   });

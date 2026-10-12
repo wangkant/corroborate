@@ -8,6 +8,9 @@ const PRIMARY_HOSTS = new Set([
   "link.springer.com", "www.sciencedirect.com", "onlinelibrary.wiley.com", "academic.oup.com", "www.cambridge.org", "royalsocietypublishing.org",
   "iopscience.iop.org", "journals.aps.org", "pubs.acs.org", "dl.acm.org", "ieeexplore.ieee.org", "www.frontiersin.org", "elifesciences.org",
   "aclanthology.org", "proceedings.neurips.cc", "proceedings.mlr.press", "openreview.net", "www.ipcc.ch", "www.iea.org", "data.worldbank.org", "www.oecd.org",
+  // Mathematics: curated databases, reviews and journals.
+  "oeis.org", "www.erdosproblems.com", "zbmath.org", "www.ams.org", "msp.org", "www.combinatorics.org", "projecteuclid.org", "www.numdam.org",
+  "www.jstor.org", "www.ems-ph.org", "ems.press", "www.worldscientific.com", "www.tandfonline.com", "epubs.siam.org", "mathworld.wolfram.com",
 ]);
 
 export function sourceTier(host: string): "primary" | "context" {
