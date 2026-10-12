@@ -1,4 +1,4 @@
-// Served by the worker itself so the app can live under any path prefix without a separate asset tree.
+// The build also writes this to public/<base>/ as a static asset; the worker route stays as a fallback.
 export const CSS = `:root {
   --bg: #f6f4ee; --ink: #1c1b18; --muted: #6b675e; --rule: #d9d4c7; --accent: #1f4e79;
   --support: #2f6b3a; --refute: #9a2f24; --contest: #8a5a00;

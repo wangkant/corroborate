@@ -23,5 +23,8 @@
       "migrations_dir": "migrations"
     }
   ],
-  "triggers": { "crons": ["*/10 * * * *"] }
+  "triggers": { "crons": ["*/10 * * * *"] },
+  // Static assets are free and unmetered; everything not in public/ falls through to the worker.
+  "build": { "command": "node scripts/write-assets.ts" },
+  "assets": { "directory": "./public" }
 }

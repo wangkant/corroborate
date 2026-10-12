@@ -4,3 +4,4 @@ node_modules/
 .prod.secrets
 *.log
 __pycache__/
+public/
