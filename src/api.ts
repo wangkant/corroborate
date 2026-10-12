@@ -2,12 +2,13 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { goldStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
-import { closeDueProposals, createInvestigation, type ProposalPayload } from "./governance";
+import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, matchLead, recentLeads, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
 import { activationHint, eligibleCount, nextReview, recomputeClaim, releaseReview, submitReview, VERDICTS } from "./review";
 import { BAD_ENCODING, clean, findSecret, injectionCheck, screen, textKey } from "./sanitize";
+import { readStats } from "./stats";
 import { registrable, sourceTier } from "./tiers";
 import { bump, hashNet, hashToken, logEvent, modelFamily, newId, newToken, timingSafeEqual, usageToday } from "./util";
 
@@ -53,9 +54,18 @@ function screened(c: C, raw: string, field: string): string | Response {
   return v.ok ? v.text : fail(c, 422, v.error);
 }
 
+const MAX_CLAIMS_PER_INVESTIGATION = 100;
+const HOST_FETCHES_PER_HOUR = 120;
+
+// New agents get small quotas until they pass quality checks, which caps what a burst of fresh accounts can write.
+const PROBATION_CAPS: Record<string, number> = { message: 10, claim: 5, snapshot: 20, report: 5 };
+const capFor = (a: Agent, action: string, limit: number) => (a.status === "probation" && action in PROBATION_CAPS ? Math.min(limit, PROBATION_CAPS[action]!) : limit);
+
 async function quota(c: C, action: string, limit: number): Promise<Response | null> {
+  const cap = capFor(c.get("agent"), action, limit);
   const n = await bump(c.env.DB, c.get("agent").id, action);
-  return n > limit ? fail(c, 429, `daily ${action} quota (${limit}) used up; it resets at 00:00 UTC`) : null;
+  const why = cap < limit ? "; probation agents get less until they pass quality checks" : "";
+  return n > cap ? fail(c, 429, `daily ${action} quota (${cap}) used up; it resets at 00:00 UTC${why}`) : null;
 }
 
 const isLocal = (c: C) => ["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname);
@@ -88,32 +98,10 @@ export const api = new Hono<AppEnv>();
 
 // ---------- public, no auth ----------
 
-api.get("/stats", async (c) => {
-  const db = c.env.DB;
-  const one = (sql: string) => db.prepare(sql).first<{ n: number | null }>().then((r) => r?.n ?? 0);
-  const [agents, active, evidence, accepted, rejected, claims, supported, refuted, contested, golds, messages, replies, returning] = await Promise.all([
-    one("SELECT COUNT(*) AS n FROM agents"),
-    one("SELECT COUNT(*) AS n FROM agents WHERE status = 'active'"),
-    one("SELECT COUNT(*) AS n FROM evidence"),
-    one("SELECT COUNT(*) AS n FROM evidence WHERE review_status = 'accepted'"),
-    one("SELECT COUNT(*) AS n FROM evidence WHERE review_status = 'rejected'"),
-    one("SELECT COUNT(*) AS n FROM claims WHERE status = 'visible'"),
-    one("SELECT COUNT(*) AS n FROM claims WHERE verdict = 'supported' AND status = 'visible'"),
-    one("SELECT COUNT(*) AS n FROM claims WHERE verdict = 'refuted' AND status = 'visible'"),
-    one("SELECT COUNT(*) AS n FROM claims WHERE verdict = 'contested' AND status = 'visible'"),
-    one("SELECT SUM(traps_caught + controls_passed) AS n FROM agents"),
-    one("SELECT COUNT(*) AS n FROM messages"),
-    one("SELECT COUNT(*) AS n FROM messages m JOIN messages p ON p.id = m.reply_to WHERE p.agent_id != m.agent_id"),
-    one("SELECT COUNT(*) AS n FROM agents WHERE last_seen - created_at > 7 * 86400000"),
-  ]);
-  return c.json({
-    ...AI_LABEL,
-    agents, active_agents: active, agents_returning_after_a_week: returning,
-    evidence_submitted: evidence, evidence_accepted: accepted, evidence_rejected: rejected,
-    claims, claims_supported: supported, claims_refuted: refuted, claims_contested: contested,
-    quality_checks_passed: golds, messages, reply_rate: messages ? Math.round((replies / messages) * 1000) / 1000 : 0,
-  });
-});
+// Seconds public pages and counts may lag; "0" turns caching off (tests).
+export const cacheSeconds = (env: { CACHE_SECONDS?: string }) => (env.CACHE_SECONDS === "0" ? 0 : Number(env.CACHE_SECONDS) || 60);
+
+api.get("/stats", async (c) => c.json({ ...AI_LABEL, ...(await readStats(c.env.DB, cacheSeconds(c.env) * 15_000)) }));
 
 // Lets agents and people see what has already been worked on, so nobody repeats it.
 api.get("/check", async (c) => {
@@ -249,7 +237,6 @@ api.get("/messages", async (c) => {
 });
 
 api.get("/proposals", async (c) => {
-  await closeDueProposals(c.env.DB);
   const open = c.req.query("status") !== "closed";
   const { results } = await c.env.DB.prepare(
     `SELECT p.id, p.kind, p.title, p.body, p.payload, p.status, p.created_at, p.closes_at, p.outcome, a.name AS agent,
@@ -304,10 +291,12 @@ api.get("/export/fever.jsonl", async (c) => {
     .prepare("SELECT claim_id, source_url, quote, stance FROM evidence WHERE status = 'visible' AND review_status = 'accepted' AND tier = 'primary'")
     .all<{ claim_id: string; source_url: string; quote: string; stance: string }>();
   const label = (v: string) => (v === "supported" ? "SUPPORTS" : v === "refuted" ? "REFUTES" : "NOT ENOUGH INFO");
+  const byClaim = new Map<string, typeof ev>();
+  for (const e of ev) byClaim.set(e.claim_id, [...(byClaim.get(e.claim_id) ?? []), e]);
   const lines = claims.map((cl) =>
     JSON.stringify({
       id: cl.id, claim: cl.text, label: label(cl.verdict), verdict: cl.verdict, quoted_from: cl.origin_url,
-      evidence: ev.filter((e) => e.claim_id === cl.id).map((e) => ({ url: e.source_url, quote_excerpt: e.quote, stance: e.stance })),
+      evidence: (byClaim.get(cl.id) ?? []).map((e) => ({ url: e.source_url, quote_excerpt: e.quote, stance: e.stance })),
       ...AI_LABEL,
       license: DATA_LICENSE,
     }),
@@ -319,6 +308,8 @@ api.get("/export/fever.jsonl", async (c) => {
 
 // ---------- registration ----------
 
+const RESERVED = /^(admin|administrator|operator|corroborate|system|root)$|^corroborate[-_ ]?operator/i;
+
 export const REGISTER = z.object({ name, model: z.string().min(2).max(64), owner: z.string().min(2).max(64).optional() });
 
 export type Registration = { ok: true; id: string; name: string; token: string } | { ok: false; status: 409 | 422 | 429 | 503; error: string };
@@ -328,14 +319,17 @@ export async function registerAgent(c: C, b: z.infer<typeof REGISTER>): Promise<
   const db = c.env.DB;
   const params = await loadParams(db);
   if (params.paused) return { ok: false, status: 503, error: "registration is paused" };
+  if (RESERVED.test(b.name) || RESERVED.test(b.owner ?? "")) return { ok: false, status: 422, error: "that name or owner is reserved for the operator" };
+  for (const [field, v] of [["model", b.model], ["owner", b.owner ?? ""]] as const) {
+    if (v.includes("�") || findSecret(v) || injectionCheck(v).blocked) return { ok: false, status: 422, error: `${field} is not acceptable` };
+  }
+  // Checked before the network budget is spent, so a taken name does not cost a registration.
+  if (await db.prepare("SELECT 1 FROM agents WHERE name = ?1").bind(b.name).first()) return { ok: false, status: 409, error: "that name is taken" };
   const netHash = c.get("netHash");
   if ((await bump(db, "net:" + netHash, "register")) > params.registrations_per_net_day)
     return { ok: false, status: 429, error: "too many registrations from this network today" };
   if ((await bump(db, "global:" + new Date().toISOString().slice(0, 13), "register")) > params.registrations_per_hour)
     return { ok: false, status: 429, error: "registration is busy; try again in an hour" };
-  for (const [field, v] of [["model", b.model], ["owner", b.owner ?? ""]] as const) {
-    if (v.includes("�") || findSecret(v) || injectionCheck(v).blocked) return { ok: false, status: 422, error: `${field} is not acceptable` };
-  }
   const token = newToken();
   const agentId = newId("ag");
   const now = Date.now();
@@ -399,7 +393,7 @@ function profile(a: Agent) {
 async function quotasLeft(c: C, a: Agent) {
   const p = await loadParams(c.env.DB);
   const used = await usageToday(c.env.DB, a.id);
-  const left = (k: string, limit: number) => Math.max(0, limit - (used[k] ?? 0));
+  const left = (k: string, limit: number) => Math.max(0, capFor(a, k, limit) - (used[k] ?? 0));
   return {
     evidence: left("evidence", p.daily_evidence_quota), evidence_attempts: left("attempt", p.daily_attempt_quota),
     snapshots: left("snapshot", p.daily_snapshot_quota), claims: left("claim", p.daily_claim_quota),
@@ -415,7 +409,6 @@ authed.get("/me", async (c) => {
 authed.get("/home", async (c) => {
   const db = c.env.DB;
   const a = c.get("agent");
-  await closeDueProposals(db);
   const [waiting, needEvidence, openProps, replies, challenges] = await Promise.all([
     eligibleCount(db, a),
     db
@@ -510,8 +503,12 @@ authed.post("/investigations/:id/claims", async (c) => {
   const db = c.env.DB;
   const b = await body(c, z.object({ text: z.string().min(15).max(300) }));
   if (b instanceof Response) return b;
-  const inv = await db.prepare("SELECT id FROM investigations WHERE id = ?1 AND status = 'open'").bind(c.req.param("id")).first();
+  const inv = await db
+    .prepare("SELECT i.id, (SELECT COUNT(*) FROM claims c WHERE c.investigation_id = i.id) AS claims FROM investigations i WHERE i.id = ?1 AND i.status = 'open'")
+    .bind(c.req.param("id"))
+    .first<{ id: string; claims: number }>();
   if (!inv) return fail(c, 404, "no open investigation with that id");
+  if (inv.claims >= MAX_CLAIMS_PER_INVESTIGATION) return fail(c, 409, `this investigation is full (${MAX_CLAIMS_PER_INVESTIGATION} claims); propose a new one`);
   const text = screened(c, b.text, "text");
   if (text instanceof Response) return text;
   const limited = await quota(c, "claim", (await loadParams(db)).daily_claim_quota);
@@ -557,6 +554,7 @@ authed.post("/snapshot", async (c) => {
   } catch (e) {
     return fail(c, 422, (e as Error).message);
   }
+  if (url.hostname === new URL(siteUrl(c)).hostname) return fail(c, 422, "cite the original source, not this site");
   const p = await loadParams(db);
   const recent = await db
     .prepare("SELECT id, url, host, title, text FROM snapshots WHERE url = ?1 AND created_at > ?2 ORDER BY created_at DESC LIMIT 1")
@@ -566,6 +564,10 @@ authed.post("/snapshot", async (c) => {
   if (!snap) {
     const limited = await quota(c, "snapshot", p.daily_snapshot_quota);
     if (limited) return limited;
+    // A per-site ceiling across all agents, so the fetcher cannot be aimed at one third-party site.
+    const site = registrable(url.hostname);
+    if ((await bump(db, `host:${site}:${new Date().toISOString().slice(0, 13)}`, "fetch")) > HOST_FETCHES_PER_HOUR)
+      return fail(c, 429, `too many fetches from ${site} this hour; try again later or use another source`);
     let page: Page;
     try {
       page = await getPage(c, url.toString());
@@ -843,6 +845,8 @@ authed.post("/proposals", async (c) => {
     text = summary;
   }
   const p = await loadParams(db);
+  const open = await db.prepare("SELECT id FROM proposals WHERE agent_id = ?1 AND status = 'open'").bind(c.get("agent").id).first<{ id: string }>();
+  if (open) return fail(c, 409, `you already have an open proposal (${open.id}); wait for it to close or withdraw it`);
   const limited = await quota(c, "proposal", p.daily_proposal_quota);
   if (limited) return limited;
   const propId = newId("prp");
@@ -870,8 +874,14 @@ authed.post("/proposals/:id/vote", async (c) => {
   const b = await body(c, z.object({ vote: z.enum(["yes", "no"]) }));
   if (b instanceof Response) return b;
   if (me.status !== "active") return fail(c, 403, "only active agents can vote; see GET /api/me for how to become active");
-  const prop = await db.prepare("SELECT id, closes_at FROM proposals WHERE id = ?1 AND status = 'open'").bind(c.req.param("id")).first<{ id: string; closes_at: number }>();
+  const prop = await db
+    .prepare("SELECT id, agent_id, closes_at FROM proposals WHERE id = ?1 AND status = 'open'")
+    .bind(c.req.param("id"))
+    .first<{ id: string; agent_id: string; closes_at: number }>();
   if (!prop || prop.closes_at <= Date.now()) return fail(c, 404, "no open proposal with that id");
+  if (prop.agent_id === me.id) return fail(c, 403, "proposers cannot vote on their own proposals");
+  const limited = await quota(c, "vote", 200);
+  if (limited) return limited;
   await db
     .prepare("INSERT INTO votes (proposal_id, agent_id, value, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (proposal_id, agent_id) DO UPDATE SET value = ?3, created_at = ?4")
     .bind(prop.id, me.id, b.vote === "yes" ? 1 : -1, Date.now())
@@ -889,17 +899,34 @@ authed.post("/reports", async (c) => {
   if (b instanceof Response) return b;
   const reason = screened(c, b.reason, "reason");
   if (reason instanceof Response) return reason;
+  const target = await db.prepare(`SELECT id FROM ${TABLES[b.target_type]} WHERE id = ?1 AND status = 'visible'`).bind(b.target_id).first();
+  if (!target) return fail(c, 404, `no visible ${b.target_type} with that id`);
+  const limited = await quota(c, "report", 20);
+  if (limited) return limited;
   await db
     .prepare("INSERT OR IGNORE INTO reports (target_type, target_id, reporter, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
     .bind(b.target_type, b.target_id, me.id, reason, Date.now())
     .run();
+  // Reporters count once per network and per owner, so a ring of accounts cannot silence others alone.
   const n = await db
-    .prepare("SELECT COUNT(*) AS n FROM reports r JOIN agents a ON a.id = r.reporter WHERE r.target_type = ?1 AND r.target_id = ?2 AND a.status = 'active'")
+    .prepare(
+      `SELECT MIN(COUNT(DISTINCT a.net_hash), COUNT(DISTINCT COALESCE(a.owner, a.net_hash))) AS n
+       FROM reports r JOIN agents a ON a.id = r.reporter WHERE r.target_type = ?1 AND r.target_id = ?2 AND a.status = 'active'`,
+    )
     .bind(b.target_type, b.target_id)
     .first<{ n: number }>();
   if ((n?.n ?? 0) >= FIXED.report_hide_threshold) {
-    await db.prepare(`UPDATE ${TABLES[b.target_type]} SET status = 'hidden' WHERE id = ?1`).bind(b.target_id).run();
-    await logEvent(db, null, "hidden", b.target_id, `${b.target_type} ${b.target_id} hidden after reports`);
+    // Messages and evidence hide on their own; claims and investigations wait for the operator.
+    if (b.target_type === "message" || b.target_type === "evidence") {
+      await db.prepare(`UPDATE ${TABLES[b.target_type]} SET status = 'hidden' WHERE id = ?1`).bind(b.target_id).run();
+      if (b.target_type === "evidence") {
+        const ev = await db.prepare("SELECT claim_id FROM evidence WHERE id = ?1").bind(b.target_id).first<{ claim_id: string }>();
+        if (ev) await recomputeClaim(db, ev.claim_id);
+      }
+      await logEvent(db, null, "hidden", b.target_id, `${b.target_type} ${b.target_id} hidden after reports from independent agents`);
+    } else {
+      await logEvent(db, null, "flagged", b.target_id, `${b.target_type} ${b.target_id} reported by independent agents; waiting for the operator`);
+    }
   }
   return c.json({ recorded: true });
 });
@@ -929,6 +956,19 @@ admin.post("/hide", async (c) => {
   if (b instanceof Response) return b;
   await c.env.DB.prepare(`UPDATE ${TABLES[b.target_type]} SET status = 'hidden' WHERE id = ?1`).bind(b.target_id).run();
   return c.json({ hidden: b.target_id });
+});
+
+admin.post("/unhide", async (c) => {
+  const db = c.env.DB;
+  const b = await body(c, z.object({ target_type: z.enum(TARGETS), target_id: id }));
+  if (b instanceof Response) return b;
+  const status = b.target_type !== "investigation" ? "'visible'" : "CASE WHEN concluded_at IS NULL THEN 'open' ELSE 'concluded' END";
+  await db.prepare(`UPDATE ${TABLES[b.target_type]} SET status = ${status} WHERE id = ?1 AND status = 'hidden'`).bind(b.target_id).run();
+  if (b.target_type === "evidence") {
+    const ev = await db.prepare("SELECT claim_id FROM evidence WHERE id = ?1").bind(b.target_id).first<{ claim_id: string }>();
+    if (ev) await recomputeClaim(db, ev.claim_id);
+  }
+  return c.json({ unhidden: b.target_id });
 });
 
 admin.post("/suspend", async (c) => {

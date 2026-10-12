@@ -1,7 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { checkUrl, decodeEntities, findQuote, htmlToText } from "../src/fetcher";
+import { checkUrl, decodeEntities, findQuote, htmlToText, paragraphs } from "../src/fetcher";
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
-import { parseFeed, problemNumbers } from "../src/leads";
+import { filedOnPage, parseFeed, problemNumbers } from "../src/leads";
+
+describe("paragraphs", () => {
+  it("cuts very long paragraphs at sentence ends without losing text", () => {
+    const long = Array.from({ length: 120 }, (_, i) => `Sentence number ${i} says something short.`).join(" ");
+    const parts = paragraphs(`Intro.\n${long}`);
+    expect(parts.length).toBeGreaterThan(3);
+    expect(Math.max(...parts.map((p) => p.length))).toBeLessThanOrEqual(2000);
+    expect(parts.slice(1).join(" ")).toBe(long);
+  });
+});
+
+describe("proof-claims matching", () => {
+  it("counts only claimant lines and the arXiv id", () => {
+    expect(filedOnPage("<p>A proof claimed by Tong Zhang (using a model).</p>", "2610.07943", "Wei Li, Kevin Vallier, Tong Zhang")).toBe(true);
+    expect(filedOnPage("<p>A proof claimed by Jacobo Lin (using a model).</p><p>Bo Li commented.</p>", "2610.00001", "Bo Li")).toBe(false);
+    expect(filedOnPage("<p>See arXiv:2609.32140v2 for details.</p>", "2609.32140", "Nobody Here")).toBe(true);
+    expect(filedOnPage("<p>See arXiv:2609.321401.</p>", "2609.32140", "Nobody Here")).toBe(false);
+  });
+});
 
 describe("arXiv leads", () => {
   it("finds explicit Erdős problem numbers only", () => {

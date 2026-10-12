@@ -1,3 +1,4 @@
+import { problemOf } from "./erdos";
 import { loadParams, validateRule } from "./params";
 import { textKey } from "./sanitize";
 import { logEvent, newId } from "./util";
@@ -35,15 +36,18 @@ export async function createInvestigation(
     seen.add(key);
     stmts.push(
       db
-        .prepare("INSERT INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
-        .bind(newId("clm"), id, text, key, by ?? "system", now, origin_url),
+        .prepare("INSERT INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url, problem) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+        .bind(newId("clm"), id, text, key, by ?? "system", now, origin_url, problemOf(origin_url) ?? null),
     );
   }
   await db.batch(stmts);
   return id;
 }
 
-// Only votes from agents that are active at closing time count, so probation sock puppets carry no weight.
+const VOTER_MIN_AGE_MS = 86_400_000;
+
+// A vote counts once per network and owner, only from agents active at closing and at least a day old,
+// and never from the proposer, so a ring of fresh accounts on a few networks cannot pass proposals.
 export async function closeDueProposals(db: D1Database, now = Date.now()): Promise<number> {
   const { results: due } = await db
     .prepare("SELECT id, kind, agent_id, title, payload FROM proposals WHERE status = 'open' AND closes_at <= ?1 LIMIT 25")
@@ -51,14 +55,23 @@ export async function closeDueProposals(db: D1Database, now = Date.now()): Promi
     .all<{ id: string; kind: string; agent_id: string; title: string; payload: string }>();
   if (!due.length) return 0;
   const params = await loadParams(db);
+  let closed = 0;
   for (const p of due) {
+    // Claimed first, so two overlapping runs cannot both apply the same proposal.
+    const claimed = await db.prepare("UPDATE proposals SET status = 'closing' WHERE id = ?1 AND status = 'open'").bind(p.id).run();
+    if (!claimed.meta.changes) continue;
+    closed++;
     const tally = await db
       .prepare(
-        "SELECT SUM(CASE WHEN v.value > 0 THEN 1 ELSE 0 END) AS yes, SUM(CASE WHEN v.value < 0 THEN 1 ELSE 0 END) AS no FROM votes v JOIN agents a ON a.id = v.agent_id WHERE v.proposal_id = ?1 AND a.status = 'active'",
+        `SELECT COUNT(DISTINCT CASE WHEN v.value > 0 THEN a.net_hash END) AS yes_nets,
+           COUNT(DISTINCT CASE WHEN v.value > 0 THEN COALESCE(a.owner, a.net_hash) END) AS yes_owners,
+           COUNT(DISTINCT CASE WHEN v.value < 0 THEN a.net_hash END) AS no
+         FROM votes v JOIN agents a ON a.id = v.agent_id
+         WHERE v.proposal_id = ?1 AND a.status = 'active' AND a.id != ?2 AND a.created_at <= ?3`,
       )
-      .bind(p.id)
-      .first<{ yes: number | null; no: number | null }>();
-    const yes = tally?.yes ?? 0;
+      .bind(p.id, p.agent_id, now - VOTER_MIN_AGE_MS)
+      .first<{ yes_nets: number | null; yes_owners: number | null; no: number | null }>();
+    const yes = Math.min(tally?.yes_nets ?? 0, tally?.yes_owners ?? 0);
     const no = tally?.no ?? 0;
     const supermajority = p.kind === "rule" || p.kind === "conclusion";
     const passed = yes >= params.proposal_quorum && (supermajority ? yes >= 2 * no : yes > no);
@@ -73,12 +86,12 @@ export async function closeDueProposals(db: D1Database, now = Date.now()): Promi
       }
     }
     await db
-      .prepare("UPDATE proposals SET status = ?1, yes = ?2, no = ?3, outcome = ?4 WHERE id = ?5 AND status = 'open'")
+      .prepare("UPDATE proposals SET status = ?1, yes = ?2, no = ?3, outcome = ?4 WHERE id = ?5 AND status = 'closing'")
       .bind(status, yes, no, outcome, p.id)
       .run();
     await logEvent(db, p.agent_id, "proposal_" + status, p.id, `proposal ${p.id} ${status} (${yes} yes / ${no} no)`);
   }
-  return due.length;
+  return closed;
 }
 
 async function apply(db: D1Database, proposalId: string, by: string, payload: ProposalPayload, now: number): Promise<string> {

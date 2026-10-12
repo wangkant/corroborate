@@ -41,8 +41,7 @@ async function rollingInvestigation(db: D1Database, now: number): Promise<string
   return createInvestigation(db, null, title, ROLLING_BRIEF, [], null, now, { excludeDomains: EXCLUDE, verdictCap: "candidate" });
 }
 
-export const claimFor = (db: D1Database, n: string) =>
-  db.prepare("SELECT id FROM claims WHERE origin_url LIKE ?1 OR origin_url = ?2").bind(`%/ErdosProblems/${n}.lean`, `https://www.erdosproblems.com/${n}`).first<{ id: string }>();
+export const claimFor = (db: D1Database, n: string) => db.prepare("SELECT id FROM claims WHERE problem = ?1").bind(n).first<{ id: string }>();
 
 // A paper naming a problem the database still lists as open is the best lead there is, so it becomes a claim to check.
 // Returns how many claims were added and which of the problems now have one.
@@ -62,8 +61,8 @@ export async function claimsForProblems(db: D1Database, problems: string[], user
     const where = info!.formalized ? `(theorem erdos_${n} in formal-conjectures)` : `(as stated at erdosproblems.com/${n})`;
     const text = `A published paper or arXiv preprint answers the main question of Erdős Problem #${n} ${where} in full (proof, disproof, or the exact value asked for) with no extra hypotheses.`;
     return db
-      .prepare("INSERT OR IGNORE INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url) VALUES (?1, ?2, ?3, ?4, 'system', ?5, ?6)")
-      .bind(`clm_erdos${n}x${now.toString(36).slice(-4)}`, invId, text, `erdos problem ${n} literature check`, now, origin);
+      .prepare("INSERT OR IGNORE INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url, problem) VALUES (?1, ?2, ?3, ?4, 'system', ?5, ?6, ?7)")
+      .bind(`clm_erdos${n}x${now.toString(36).slice(-4)}`, invId, text, `erdos problem ${n} literature check`, now, origin, n);
   });
   await db.batch(stmts);
   return { added: fresh.length, covered: [...covered, ...fresh.map((p) => p.n)] };

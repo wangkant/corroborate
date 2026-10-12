@@ -263,7 +263,7 @@ export async function resolveEvidence(db: D1Database, evidenceId: string, now = 
   else outcome = "disputed";
 
   const claimed = await db
-    .prepare("UPDATE evidence SET review_status = ?1, resolved_at = ?2 WHERE id = ?3 AND review_status = 'in_review'")
+    .prepare("UPDATE evidence SET review_status = ?1, resolved_at = ?2, checked_at = ?2 WHERE id = ?3 AND review_status = 'in_review'")
     .bind(outcome, now, evidenceId)
     .run();
   if (!claimed.meta.changes) return;

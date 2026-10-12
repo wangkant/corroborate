@@ -1,4 +1,4 @@
-import { claimFor, claimsForProblems, problemOf } from "./erdos";
+import { claimFor, claimsForProblems } from "./erdos";
 import { decodeEntities } from "./fetcher";
 import { clean } from "./sanitize";
 
@@ -192,14 +192,14 @@ export async function recentLeads(db: D1Database, sinceDays: number, limit = 60)
     ? (
         await db
           .prepare(
-            `SELECT c.id, c.investigation_id, c.verdict, c.origin_url FROM claims c JOIN investigations i ON i.id = c.investigation_id
-             WHERE c.status = 'visible' AND i.status != 'hidden' AND (${nums.map((_, i) => `c.origin_url LIKE ?${2 * i + 1} OR c.origin_url = ?${2 * i + 2}`).join(" OR ")})`,
+            `SELECT c.id, c.investigation_id, c.verdict, c.problem FROM claims c JOIN investigations i ON i.id = c.investigation_id
+             WHERE c.problem IN (${nums.map((_, i) => `?${i + 1}`).join(", ")}) AND c.status = 'visible' AND i.status != 'hidden'`,
           )
-          .bind(...nums.flatMap((n) => [`%/ErdosProblems/${n}.lean`, `https://www.erdosproblems.com/${n}`]))
-          .all<{ id: string; investigation_id: string; verdict: string; origin_url: string }>()
+          .bind(...nums)
+          .all<{ id: string; investigation_id: string; verdict: string; problem: string }>()
       ).results
     : [];
-  const byProblem = (n: string) => claims.filter((c) => problemOf(c.origin_url) === n);
+  const byProblem = (n: string) => claims.filter((c) => c.problem === n);
   return results.map((r) => {
     const problems = list(r.problems);
     const matched = list(r.matched);

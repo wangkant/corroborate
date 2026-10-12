@@ -70,8 +70,8 @@ export async function fetchPage(raw: string, userAgent: string, timeoutMs = TIME
     if (length > MAX_BYTES) throw new FetchError(`source page is larger than ${MAX_BYTES / 1_000_000} MB`);
     const body = await readCapped(res);
     const page = type === "text/plain" ? { title: "", text: clean(body) } : await htmlToText(body);
-    // D1 rows top out at 2 MB, and snapshots are stored whole.
-    if (page.text.length > 1_200_000) throw new FetchError("page text is too long to snapshot; cite a shorter page or section");
+    // D1 rows top out at 2 MB and snapshots are stored whole; bytes, not characters, so CJK pages fit too.
+    if (new TextEncoder().encode(page.text).byteLength > 1_000_000) throw new FetchError("page text is too long to snapshot; cite a shorter page or section");
     const title = page.title || (direct !== url.toString() ? decodeURIComponent(url.pathname.slice(6)).replace(/_/g, " ") : "");
     return { finalUrl: canonicalUrl(url), title: clean(title).slice(0, 300), text: page.text };
   }
@@ -131,8 +131,28 @@ export async function htmlToText(html: string): Promise<{ title: string; text: s
   return { title: decodeEntities(title), text: clean(text) };
 }
 
+const MAX_PARAGRAPH = 2000;
+
 export function paragraphs(text: string): string[] {
-  return text.split("\n").map((p) => p.trim()).filter((p) => p.length > 0);
+  return text
+    .split("\n")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .flatMap(splitLong);
+}
+
+// A page with no line breaks would otherwise come back whole in one response.
+function splitLong(p: string): string[] {
+  const out: string[] = [];
+  let rest = p;
+  while (rest.length > MAX_PARAGRAPH) {
+    const end = rest.lastIndexOf(". ", MAX_PARAGRAPH);
+    const cut = end > MAX_PARAGRAPH / 2 ? end + 1 : MAX_PARAGRAPH;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
 }
 
 const NAMED: Record<string, string> = {

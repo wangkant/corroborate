@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
-import { admin, api, authed, netHashMiddleware, siteUrl } from "./api";
+import { admin, api, authed, cacheSeconds, netHashMiddleware, siteUrl } from "./api";
 import type { AppEnv, Env } from "./env";
 import { closeDueProposals } from "./governance";
 import { pages, setBase } from "./pages";
@@ -9,9 +9,33 @@ import { checkFiled, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
 import { settleStalled } from "./review";
 import { skillMd } from "./skill";
+import { refreshStats } from "./stats";
 import { CSS, FAVICON } from "./style";
 
 const app = new Hono<AppEnv>();
+
+// Anonymous public reads are served from the data centre's cache for a minute. Every request still runs the
+// worker, so this saves D1 reads and CPU, not request quota.
+const CACHEABLE =
+  /^\/(?:|investigations|findings|leads|agents|proposals|about|join|report|[ica]\/[\w.-]+|api\/(?:stats|investigations(?:\/[\w-]+)?|claims\/[\w-]+|leads|messages|proposals|params|check|export|export\/fever\.jsonl))$/;
+
+app.use("*", async (c, next) => {
+  const ttl = cacheSeconds(c.env);
+  if (!ttl || c.req.method !== "GET" || c.req.header("authorization") || !CACHEABLE.test(c.req.path)) return next();
+  const key = new Request(c.req.url);
+  const hit = await caches.default.match(key);
+  if (hit) {
+    // The zone's browser-cache TTL rewrites cached headers to hours; browsers should still ask again.
+    const fresh = new Response(hit.body, hit);
+    fresh.headers.set("cache-control", "no-cache");
+    return fresh;
+  }
+  await next();
+  if (c.res.status !== 200) return;
+  const copy = new Response(c.res.clone().body, c.res);
+  copy.headers.set("cache-control", `public, max-age=${ttl}`);
+  c.executionCtx.waitUntil(caches.default.put(key, copy));
+});
 
 app.use(
   "*",
@@ -32,6 +56,7 @@ app.use(
 app.use("*", netHashMiddleware);
 app.use("/api/*", bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "request body over 16 KB", status: 413 }, 413) }));
 app.use("/report", bodyLimit({ maxSize: 8 * 1024, onError: (c) => c.text("Report too long", 413) }));
+app.use("/join", bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.text("Form too long", 413) }));
 
 app.use("/api/*", async (c, next) => {
   await next();
@@ -90,13 +115,17 @@ export default {
     ctx.waitUntil(
       (async () => {
         // Cheap housekeeping first: a CPU-limit kill in the fetch-heavy steps below cannot be caught.
-        const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
-        await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(cutoff).run();
-        await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(Date.now() - 2 * 86_400_000).run();
+        const now = new Date();
+        if (now.getUTCMinutes() < 10) {
+          await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)).run();
+          // Evidence keeps its own context and hash, so snapshots only need to outlive the 6-hour reuse window.
+          await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run();
+        }
+        await refreshStats(env.DB);
         await closeDueProposals(env.DB);
         await settleStalled(env.DB);
         const ua = `CorroborateBot/0.1 (+${(env.SITE_URL ?? "") + (env.BASE_PATH ?? "")}/about)`;
-        await recheckSources(env.DB, ua);
+        await recheckSources(env.DB, ua, 2);
         await refreshLeads(env.DB, ua).catch((e) => console.warn("leads refresh failed", String(e)));
         await checkFiled(env.DB, ua).catch((e) => console.warn("proof-claims check failed", String(e)));
       })(),

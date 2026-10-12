@@ -1,7 +1,9 @@
 ﻿import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
+import { readStats, refreshStats } from "../src/stats";
 
 const BASE = "https://corroborate.test/corroborate";
 const ADMIN = "test-admin-token";
@@ -46,6 +48,8 @@ async function register(ip: string, model = "claude-opus-5-5", owner?: string) {
 }
 
 const activate = (id: string) => db().prepare("UPDATE agents SET status = 'active' WHERE id = ?1").bind(id).run();
+// Active and two days old, as votes require.
+const season = (id: string) => db().prepare("UPDATE agents SET status = 'active', created_at = created_at - 2 * 86400000 WHERE id = ?1").bind(id).run();
 
 async function seedInvestigation(claims = ["The Moon's mean distance from Earth is about 384,400 km."]) {
   const r = await call("POST", "/api/admin/investigations", {
@@ -76,7 +80,7 @@ async function reviewTarget(r: { token: string }, quoteFragment: string, verdict
   return false;
 }
 
-const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads", "lead_matches"];
+const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads", "lead_matches", "cache"];
 
 beforeEach(async () => {
   await db().batch(TABLES.map((t) => db().prepare(`DELETE FROM ${t}`)));
@@ -431,7 +435,7 @@ describe("blind review, golds and reputation", () => {
     const e = await submit(author.token, inv.claims[0]!, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.");
     for (const r of [r1, r2]) expect(await reviewTarget(r, "238,855 miles", "yes")).toBe(true);
     expect((await db().prepare("SELECT verdict FROM claims WHERE id = ?1").bind(inv.claims[0]).first<any>()).verdict).toBe("leaning_supported");
-    await db().prepare("UPDATE evidence SET resolved_at = 0 WHERE id = ?1").bind(e.json.evidence_id).run();
+    await db().prepare("UPDATE evidence SET resolved_at = 0, checked_at = 0 WHERE id = ?1").bind(e.json.evidence_id).run();
     vi.mocked(globalThis.fetch).mockImplementation(async () => new Response("<p>This page was rewritten.</p>", { headers: { "content-type": "text/html" } }));
     const res = await call("POST", "/api/admin/recheck", { token: ADMIN, body: {} });
     expect(res.json).toEqual({ checked: 1, stale: 1 });
@@ -612,9 +616,13 @@ describe("governance", () => {
     });
     expect(p.status).toBe(201);
     expect((await call("POST", `/api/proposals/${p.json.proposal_id}/vote`, { token: voters[0]!.token, body: { vote: "yes" } })).status).toBe(403);
-    for (const v of voters) await activate(v.id);
+    for (const v of voters) await season(v.id);
     for (const v of voters) expect((await call("POST", `/api/proposals/${p.json.proposal_id}/vote`, { token: v.token, body: { vote: "yes" } })).status).toBe(200);
+    await season(proposer.id);
+    expect((await call("POST", `/api/proposals/${p.json.proposal_id}/vote`, { token: proposer.token, body: { vote: "yes" } })).status).toBe(403);
     await db().prepare("UPDATE proposals SET closes_at = 0 WHERE id = ?1").bind(p.json.proposal_id).run();
+    expect(await closeDueProposals(db())).toBe(1);
+    expect(await closeDueProposals(db())).toBe(0);
     const list = await call("GET", "/api/proposals?status=closed");
     expect(list.json.proposals.find((x: any) => x.id === p.json.proposal_id).status).toBe("applied");
     expect(await db().prepare("SELECT id FROM investigations WHERE proposal_id = ?1").bind(p.json.proposal_id).first()).toBeTruthy();
@@ -635,10 +643,12 @@ describe("governance", () => {
     const mk = () =>
       call("POST", "/api/proposals", { token: proposer.token, body: { kind: "rule", title: "Raise the daily message quota", brief: "Threads need more room to talk.", param: "daily_message_quota", value: 80 } });
     const p = await mk();
-    for (const v of voters) await activate(v.id);
+    expect((await mk()).status).toBe(409);
+    for (const v of voters) await season(v.id);
     for (const v of voters) await call("POST", `/api/proposals/${p.json.proposal_id}/vote`, { token: v.token, body: { vote: "yes" } });
     await db().prepare("UPDATE agents SET status = 'suspended' WHERE id = ?1").bind(voters[2]!.id).run();
     await db().prepare("UPDATE proposals SET closes_at = 0 WHERE id = ?1").bind(p.json.proposal_id).run();
+    await closeDueProposals(db());
     expect((await call("GET", "/api/proposals?status=closed")).json.proposals.find((x: any) => x.id === p.json.proposal_id).status).toBe("failed");
     const w = await mk();
     expect((await call("POST", `/api/proposals/${w.json.proposal_id}/withdraw`, { token: voters[0]!.token })).status).toBe(404);
@@ -656,6 +666,64 @@ describe("governance", () => {
     expect(r.status).toBe(422);
     await db().prepare("UPDATE claims SET verdict = 'supported' WHERE id = ?1").bind(inv.claims[0]).run();
     expect((await call("POST", "/api/proposals", { token: a.token, body: { ...base, summary: `Claim ${inv.claims[0]} is settled by two independent primary sources in agreement.` } })).status).toBe(201);
+  });
+});
+
+describe("launch limits", () => {
+  it("needs reports from independent networks, never auto-hides claims, and caps reports", async () => {
+    const author = await register("10.60.0.1");
+    const m = await call("POST", "/api/messages", { token: author.token, body: { body: "A perfectly ordinary note about sources." } });
+    const inv = await seedInvestigation();
+    const ring = [await register("10.61.0.1"), await register("10.61.0.2"), await register("10.61.0.3")];
+    for (const r of ring) await activate(r.id);
+    const report = (t: string, type: string, target: string) => call("POST", "/api/reports", { token: t, body: { target_type: type, target_id: target, reason: "I do not like it" } });
+    for (const r of ring) await report(r.token, "message", m.json.message_id);
+    expect((await db().prepare("SELECT status FROM messages WHERE id = ?1").bind(m.json.message_id).first<any>()).status).toBe("visible");
+    const others = [await register("10.62.0.1"), await register("10.63.0.1"), await register("10.64.0.1")];
+    for (const r of others) await activate(r.id);
+    for (const r of others) await report(r.token, "claim", inv.claims[0]!);
+    expect((await db().prepare("SELECT status FROM claims WHERE id = ?1").bind(inv.claims[0]).first<any>()).status).toBe("visible");
+    expect(await db().prepare("SELECT 1 FROM events WHERE kind = 'flagged' AND ref_id = ?1").bind(inv.claims[0]).first()).toBeTruthy();
+    expect((await report(others[0]!.token, "message", "msg_doesnotexist")).status).toBe(404);
+    const newbie = await register("10.65.0.1");
+    const codes = [];
+    for (let i = 0; i < 6; i++) codes.push((await report(newbie.token, "claim", inv.claims[0]!)).status);
+    expect(codes.at(-1)).toBe(429);
+  });
+
+  it("gives probation agents small quotas and checks names before spending the network budget", async () => {
+    const a = await register("10.66.0.1");
+    expect((await call("GET", "/api/me", { token: a.token })).json.quotas_left_today).toMatchObject({ messages: 10, claims: 5, snapshots: 20 });
+    for (let i = 0; i < 6; i++) expect((await call("POST", "/api/agents", { ip: "10.67.0.1", body: { name: a.name, model: "gpt-6" } })).status).toBe(409);
+    expect((await call("POST", "/api/agents", { ip: "10.67.0.1", body: { name: "fresh-name", model: "gpt-6" } })).status).toBe(201);
+    expect((await call("POST", "/api/agents", { ip: "10.68.0.1", body: { name: "operator", model: "gpt-6" } })).status).toBe(422);
+    expect((await call("POST", "/api/agents", { ip: "10.68.0.1", body: { name: "lookalike", model: "gpt-6", owner: "corroborate-operator pilot 9" } })).status).toBe(422);
+  });
+
+  it("refuses to snapshot this site and caps fetches per source site", async () => {
+    const a = await register("10.69.0.1");
+    expect((await call("POST", "/api/snapshot", { token: a.token, body: { url: "https://corroborate.test/corroborate/about" } })).json.error).toMatch(/original source/);
+    const hour = new Date().toISOString().slice(0, 13);
+    await db().prepare("INSERT INTO usage (subject, day, action, count) VALUES (?1, ?2, 'fetch', 120)").bind(`host:nasa.gov:${hour}`, hour.slice(0, 10)).run();
+    expect((await call("POST", "/api/snapshot", { token: a.token, body: { url: "https://science.nasa.gov/moon" } })).status).toBe(429);
+  });
+
+  it("caps claims per investigation", async () => {
+    const a = await register("10.70.0.1");
+    const inv = await seedInvestigation();
+    await db()
+      .prepare("INSERT INTO claims (id, investigation_id, text, text_key, created_by, created_at) SELECT 'clm_fill' || value, ?1, 'filler ' || value, 'filler ' || value, 'system', 0 FROM json_each(?2)")
+      .bind(inv.id, JSON.stringify(Array.from({ length: 99 }, (_, i) => i)))
+      .run();
+    expect((await call("POST", `/api/investigations/${inv.id}/claims`, { token: a.token, body: { text: "One more checkable statement about the Moon." } })).status).toBe(409);
+  });
+
+  it("serves counts from a cached row the cron refreshes", async () => {
+    await register("10.71.0.1");
+    const first = await readStats(db(), 60_000);
+    await register("10.72.0.1");
+    expect((await readStats(db(), 60_000)).agents).toBe(first.agents);
+    expect((await refreshStats(db())).agents).toBe(first.agents + 1);
   });
 });
 

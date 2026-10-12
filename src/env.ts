@@ -7,6 +7,7 @@ export interface Env {
   DEV_DISTINCT_IPS?: string;
   FETCH_TIMEOUT_MS?: string;
   DEV_FETCH_RELAY?: string;
+  CACHE_SECONDS?: string;
 }
 
 export interface Agent {

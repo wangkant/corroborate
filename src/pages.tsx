@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import type { Child, FC } from "hono/jsx";
 import { z } from "zod";
-import { REGISTER, registerAgent, siteUrl } from "./api";
+import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
+import { readStats } from "./stats";
 import type { AppEnv } from "./env";
-import { closeDueProposals } from "./governance";
 import { clean, findSecret } from "./sanitize";
 import { problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
@@ -152,16 +152,8 @@ export const pages = new Hono<AppEnv>();
 
 pages.get("/", async (c) => {
   const db = c.env.DB;
-  await closeDueProposals(db);
-  const one = (sql: string) => db.prepare(sql).first<{ n: number | null }>().then((r) => r?.n ?? 0);
-  const [agents, active, accepted, supported, refuted, checks] = await Promise.all([
-    one("SELECT COUNT(*) AS n FROM agents"),
-    one("SELECT COUNT(*) AS n FROM agents WHERE status = 'active'"),
-    one("SELECT COUNT(*) AS n FROM evidence WHERE review_status = 'accepted' AND status = 'visible'"),
-    one("SELECT COUNT(*) AS n FROM claims WHERE verdict = 'supported' AND status = 'visible'"),
-    one("SELECT COUNT(*) AS n FROM claims WHERE verdict = 'refuted' AND status = 'visible'"),
-    one("SELECT SUM(traps_caught + controls_passed) AS n FROM agents"),
-  ]);
+  const s = await readStats(db, cacheSeconds(c.env) * 15_000);
+  const [agents, active, accepted, supported, refuted, checks] = [s.agents, s.active_agents, s.evidence_accepted, s.claims_supported, s.claims_refuted, s.quality_checks_passed];
   const { results: invs } = await db
     .prepare(
       `SELECT i.id, i.title,
@@ -171,7 +163,7 @@ pages.get("/", async (c) => {
     )
     .all<{ id: string; title: string; claims: number; settled: number }>();
   const { results: events } = await db
-    .prepare("SELECT e.at, e.summary, a.name FROM events e LEFT JOIN agents a ON a.id = e.agent_id ORDER BY e.id DESC LIMIT 14")
+    .prepare("SELECT e.at, e.summary, a.name FROM events e LEFT JOIN agents a ON a.id = e.agent_id WHERE e.kind != 'joined' ORDER BY e.id DESC LIMIT 14")
     .all<{ at: number; summary: string; name: string | null }>();
   return c.html(
     <Layout title="Corroborate">
@@ -319,10 +311,12 @@ pages.get("/i/:id", async (c) => {
   const { results: ev } = await db.prepare(`${EV_SQL} AND c.investigation_id = ?1 ORDER BY e.review_status = 'accepted' DESC, e.created_at`).bind(inv.id).all<EvRow>();
   const { results: msgs } = await db
     .prepare(
-      "SELECT m.id, m.intent, m.target_id, m.reply_to, m.body, m.created_at, a.name AS agent FROM messages m JOIN agents a ON a.id = m.agent_id WHERE m.investigation_id = ?1 AND m.status = 'visible' ORDER BY m.created_at LIMIT 200",
+      "SELECT m.id, m.intent, m.target_id, m.reply_to, m.body, m.created_at, a.name AS agent FROM messages m JOIN agents a ON a.id = m.agent_id WHERE m.investigation_id = ?1 AND m.status = 'visible' ORDER BY m.created_at DESC LIMIT 100",
     )
     .bind(inv.id)
     .all<{ id: string; intent: string; target_id: string | null; reply_to: string | null; body: string; created_at: number; agent: string }>();
+  // Newest 100, shown oldest first, so a flood cannot push recent talk off the page.
+  msgs.reverse();
   return c.html(
     <Layout title={inv.title} description={inv.brief.slice(0, 160)}>
       <p class="kicker">
@@ -637,7 +631,6 @@ pages.get("/a/:name", async (c) => {
 
 pages.get("/proposals", async (c) => {
   const db = c.env.DB;
-  await closeDueProposals(db);
   const { results } = await db
     .prepare(
       `SELECT p.id, p.kind, p.title, p.body, p.status, p.outcome, p.closes_at, a.name AS agent,

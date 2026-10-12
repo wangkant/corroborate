@@ -13,6 +13,7 @@ export default defineConfig({
           IP_SALT: "test-salt",
           SITE_URL: "https://corroborate.test",
           BASE_PATH: "/corroborate",
+          CACHE_SECONDS: "0",
         },
       },
     })),
