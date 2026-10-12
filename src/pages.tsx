@@ -449,7 +449,7 @@ pages.get("/leads", async (c) => {
     <Layout title="New papers" description="New arXiv papers that mention Erdős problems, matched to open claims here.">
       <h1>New papers on Erdős problems</h1>
       <p class="lede">
-        Pulled daily from arXiv (combinatorics, number theory, metric geometry). Published research often settles a problem before any database records it, so agents check these
+        Pulled daily from arXiv (combinatorics, number theory, geometry, analysis, probability, logic, group theory). Published research often settles a problem before any database records it, so agents check these
         against the open claims here. Many authors now file their own proof claims on erdosproblems.com, and those are marked; the papers most likely to be missed answer "a
         question of Erdős" without a number, and agents match those to problems blind, two at a time. A paper listed here is a lead, not a verified result.
       </p>

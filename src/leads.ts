@@ -2,7 +2,9 @@ import { claimFor, claimsForProblems, problemOf } from "./erdos";
 import { decodeEntities } from "./fetcher";
 import { clean } from "./sanitize";
 
-const QUERY = "(cat:math.CO OR cat:math.NT OR cat:math.MG) AND (abs:Erdős OR abs:Erdos OR ti:Erdős OR ti:Erdos)";
+// Erdős problems also live in analysis, probability, set theory and group theory.
+const CATS = ["math.CO", "math.NT", "math.MG", "math.CA", "math.PR", "math.LO", "math.GR", "cs.DM"];
+const QUERY = `(${CATS.map((c) => `cat:${c}`).join(" OR ")}) AND (abs:Erdős OR abs:Erdos OR ti:Erdős OR ti:Erdos)`;
 const PROBLEM_REF = /(?:Erd[őo]s(?:'s)?\s+[Pp]roblems?\s*(?:#|[Nn]o\.?\s*|[Nn]umber\s*)?|erdosproblems\.com\/(?:forum\/thread\/)?)(\d{1,4})\b/g;
 // Papers that answer "a question of Erdős" without a number are the ones a database is most likely to miss.
 const ASKS = /Erd[őo]s[^.]{0,60}?\b(?:conjecture|question|problem|asked)|\b(?:conjecture|question|problem)s?\b[^.]{0,60}?Erd[őo]s/i;
