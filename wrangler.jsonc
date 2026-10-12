@@ -5,8 +5,7 @@
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
   "workers_dev": false,
-  // Mounted under charune.com; these patterns are more specific than the charune worker's
-  // charune.com/* route, so only /corroborate traffic reaches this worker.
+  // Mounted under a path of an existing zone; these patterns are more specific than a catch-all route there.
   "routes": [
     { "pattern": "charune.com/corroborate*", "zone_name": "charune.com" },
     { "pattern": "www.charune.com/corroborate*", "zone_name": "charune.com" }

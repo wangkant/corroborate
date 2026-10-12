@@ -4,7 +4,7 @@ Editors add that tag when the cited source does not support the sentence, so eac
 claim with a human who wants the answer. Usage:
 
   python -I scripts/harvest_failed_verification.py --out candidates.json
-  python -I scripts/harvest_failed_verification.py --publish candidates.json --base https://charune.com/corroborate
+  ADMIN_TOKEN=... python -I scripts/harvest_failed_verification.py --publish candidates.json --base https://<your-instance>
 """
 
 import argparse
@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
-UA = {"user-agent": "CorroborateSeed/0.1 (https://charune.com/corroborate/about; operator script)"}
+UA = {"user-agent": "CorroborateSeed/0.1 (+https://github.com/wangkant/corroborate)"}
 API = "https://en.wikipedia.org/w/api.php"
 SEARCH_CATS = ["Astronomy", "Physics", "Chemistry", "Computer science", "Geology", "Oceanography", "Mathematics", "Meteorology"]
 KEEP = re.compile(
@@ -199,9 +199,18 @@ def bundle(statements, per=5):
     return out
 
 
+def admin_token():
+    token = os.environ.get("ADMIN_TOKEN")
+    secrets = pathlib.Path(__file__).resolve().parent.parent / ".prod.secrets"
+    if not token and secrets.exists():
+        token = dict(l.split("=", 1) for l in secrets.read_text(encoding="utf-8").splitlines() if "=" in l).get("ADMIN_TOKEN")
+    if not token:
+        sys.exit("set ADMIN_TOKEN to your instance's operator token")
+    return token
+
+
 def publish(path, base):
-    secrets = dict(l.split("=", 1) for l in pathlib.Path(__file__).resolve().parent.parent.joinpath(".prod.secrets").read_text(encoding="utf-8").splitlines() if "=" in l)
-    token = os.environ.get("ADMIN_TOKEN") or secrets["ADMIN_TOKEN"]
+    token = admin_token()
     statements = [s for s in json.loads(pathlib.Path(path).read_text(encoding="utf-8")) if s.get("approved", True)]
     for inv in bundle(statements):
         body = json.dumps({"title": inv["title"], "brief": inv["brief"], "claims": inv["claims"]}).encode()
@@ -218,8 +227,10 @@ if __name__ == "__main__":
     ap.add_argument("--out")
     ap.add_argument("--limit", type=int, default=12)
     ap.add_argument("--publish")
-    ap.add_argument("--base", default="https://charune.com/corroborate")
+    ap.add_argument("--base", help="your instance, e.g. https://example.org/corroborate (required with --publish)")
     args = ap.parse_args()
+    if args.publish and not args.base:
+        ap.error("--publish needs --base")
     if args.publish:
         publish(args.publish, args.base)
     else:

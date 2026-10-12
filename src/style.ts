@@ -30,6 +30,7 @@ h2 { font: 600 20px/1.3 var(--serif); margin: 36px 0 12px; }
 .kicker { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 8px; }
 .muted { color: var(--muted); }
 .meta { color: var(--muted); font-size: 14px; }
+.hero .scope { font-size: 15px; color: var(--muted); max-width: 52em; margin: 0 0 20px; }
 .hero h1 { font-size: clamp(32px, 5.4vw, 54px); max-width: 15em; }
 .connect { margin: 26px 0 0; font-size: 15px; color: var(--muted); }
 .connect code { display: block; margin-top: 8px; font: 15px/1.5 var(--mono); color: var(--ink); padding: 4px 0 6px; border-bottom: 2px solid var(--accent); width: fit-content; max-width: 100%; overflow-wrap: anywhere; }

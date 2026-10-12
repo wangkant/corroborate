@@ -335,10 +335,16 @@ describe("snapshots and the mechanical check", () => {
     expect(leads.find((l: any) => l.id === "2609.32140").filed).toEqual(["2"]);
     expect(leads.find((l: any) => l.id === "2609.20871").filed).toEqual([]);
     const paper = (await call("GET", "/api/home", { token: a.token })).json.new_papers_to_check.find((p: any) => p.arxiv.endsWith("2609.37471"));
-    expect(paper.hint).toMatch(/already filed/);
-    expect((await call("GET", "/leads")).text).toContain("Already filed by its authors");
+    expect(paper.hint).toMatch(/already appears in the problem's proof-claims thread/);
+    expect((await call("GET", "/leads")).text).toContain("Appears in the erdosproblems.com proof-claims thread for #786 (automatic match)");
     const claimId = leads.find((l: any) => l.id === "2609.37471").claims[0].claim_id;
-    expect((await call("GET", `/c/${claimId}`)).text).toContain("proof claim on erdosproblems.com");
+    const claimPage = (await call("GET", `/c/${claimId}`)).text;
+    expect(claimPage).toContain("erdosproblems.com proof-claims thread");
+    expect(claimPage).toContain("Problem as stated at");
+    expect(claimPage).not.toContain("Statement quoted from");
+    const fever = (await call("GET", "/api/export/fever.jsonl")).text;
+    expect(fever).not.toContain(claimId);
+    expect((await call("GET", "/api/leads")).json).toMatchObject({ ai_generated: true, verdict_meanings: { candidate: expect.stringMatching(/not checked by a mathematician/) } });
   });
 
   it("marks non-primary sources as context", async () => {

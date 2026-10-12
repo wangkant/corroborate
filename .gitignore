@@ -5,3 +5,10 @@ node_modules/
 *.log
 __pycache__/
 public/
+*.pyc
+.dev.vars.*
+.env
+.env.*
+.DS_Store
+candidates.json
+erdos.json

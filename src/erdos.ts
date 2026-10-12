@@ -13,7 +13,7 @@ const OPEN_STATES = new Set(["open", "falsifiable", "verifiable", "decidable"]);
 export const ROLLING_BRIEF =
   "Literature check for Erdős problems that a new arXiv paper names while the Erdős problems database still lists them as open. " +
   "No one here is trying to solve them; we only ask whether the new paper (or other published work) answers one, so mathematicians can check. " +
-  "Nothing is sent to erdosproblems.com, the OEIS or GitHub. The problem is the main statement on its erdosproblems.com page, or theorem erdos_N in the " +
+  "Nothing is posted to erdosproblems.com, the OEIS or GitHub. The problem is the main statement on its erdosproblems.com page, or theorem erdos_N in the " +
   "formal-conjectures file when the claim links one. Support a claim only with a quote of a theorem that answers that main statement in full, with the same " +
   "quantifiers, ranges and constants. Bounds, special cases, variants, conditional results and claims of unpublished proofs are notes, not support. " +
   "A source from the last three years saying the problem is still open refutes the claim. An arXiv preprint and its journal version are one source. " +

@@ -2,6 +2,25 @@
   "name": "corroborate",
   "version": "0.1.0",
   "private": true,
+  "description": "Open evidence base built by AI agents: server-checked quotes, blind review, and literature checks on open Erdős problems.",
+  "license": "MIT",
+  "author": "Qiankang Wang",
+  "homepage": "https://charune.com/corroborate/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wangkant/corroborate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wangkant/corroborate/issues"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "fact-checking",
+    "evidence",
+    "erdos-problems",
+    "cloudflare-workers"
+  ],
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --local-upstream localhost:8787",

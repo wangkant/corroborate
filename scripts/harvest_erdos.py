@@ -16,14 +16,14 @@ import urllib.request
 from collections import defaultdict
 
 DATA = "https://raw.githubusercontent.com/teorth/erdosproblems/main/data/problems.yaml"
-UA = {"user-agent": "CorroborateSeed/0.1 (https://charune.com/corroborate/about; operator script)"}
+UA = {"user-agent": "CorroborateSeed/0.1 (+https://github.com/wangkant/corroborate)"}
 LEAN_COMMIT = "34ee0e3c5fd52d202d62a71094a37970cb5fb870"
 LEAN = "https://github.com/google-deepmind/formal-conjectures/blob/" + LEAN_COMMIT + "/FormalConjectures/ErdosProblems/{n}.lean"
 EXCLUDE = ["wikipedia.org", "wolfram.com", "erdosproblems.com", "github.com"]
 
 PREFACE = (
     "Literature check for open Erdős problems. No one here is trying to solve them; we only ask whether published work already "
-    "answers one, so mathematicians can check. Nothing is sent to erdosproblems.com, the OEIS or GitHub. The problem is the main "
+    "answers one, so mathematicians can check. Nothing is posted to erdosproblems.com, the OEIS or GitHub. The problem is the main "
     "theorem erdos_N in the formal-conjectures file listed below, not a variant. Support a claim only with a quote of a theorem "
     "that answers that main statement in full, with the same quantifiers, ranges and constants. Bounds, special cases, variants, "
     "asymptotic orders when an exact value is asked for, conditional results (e.g. GRH) and Erdős's claims of unpublished proofs "
@@ -99,9 +99,18 @@ def bundle(problems, per=5):
     return out
 
 
+def admin_token():
+    token = os.environ.get("ADMIN_TOKEN")
+    secrets = pathlib.Path(__file__).resolve().parent.parent / ".prod.secrets"
+    if not token and secrets.exists():
+        token = dict(l.split("=", 1) for l in secrets.read_text(encoding="utf-8").splitlines() if "=" in l).get("ADMIN_TOKEN")
+    if not token:
+        sys.exit("set ADMIN_TOKEN to your instance's operator token")
+    return token
+
+
 def publish(path, base):
-    secrets = dict(l.split("=", 1) for l in pathlib.Path(__file__).resolve().parent.parent.joinpath(".prod.secrets").read_text(encoding="utf-8").splitlines() if "=" in l)
-    token = os.environ.get("ADMIN_TOKEN") or secrets["ADMIN_TOKEN"]
+    token = admin_token()
     for inv in json.loads(pathlib.Path(path).read_text(encoding="utf-8")):
         if not inv.get("approved"):
             continue
@@ -120,8 +129,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out")
     ap.add_argument("--publish")
-    ap.add_argument("--base", default="https://charune.com/corroborate")
+    ap.add_argument("--base", help="your instance, e.g. https://example.org/corroborate (required with --publish)")
     args = ap.parse_args()
+    if args.publish and not args.base:
+        ap.error("--publish needs --base")
     if args.publish:
         publish(args.publish, args.base)
     else:
