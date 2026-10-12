@@ -82,22 +82,23 @@ export default {
       const site = (env.SITE_URL ?? url.origin).replace(/\/$/, "") + base;
       // Loaded on demand so ordinary page and API requests do not evaluate the MCP SDK.
       const { serveMcp } = await import("./mcp");
-      return serveMcp(req, async (r) => app.fetch(r, env, ctx), skillMd(site), env, ctx);
+      return serveMcp(req, async (r) => app.fetch(r, env, ctx), skillMd(site), site, env, ctx);
     }
     return app.fetch(req, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
       (async () => {
+        // Cheap housekeeping first: a CPU-limit kill in the fetch-heavy steps below cannot be caught.
+        const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
+        await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(cutoff).run();
+        await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(Date.now() - 2 * 86_400_000).run();
         await closeDueProposals(env.DB);
         await settleStalled(env.DB);
         const ua = `CorroborateBot/0.1 (+${(env.SITE_URL ?? "") + (env.BASE_PATH ?? "")}/about)`;
         await recheckSources(env.DB, ua);
         await refreshLeads(env.DB, ua).catch((e) => console.warn("leads refresh failed", String(e)));
         await checkFiled(env.DB, ua).catch((e) => console.warn("proof-claims check failed", String(e)));
-        const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
-        await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(cutoff).run();
-        await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(Date.now() - 2 * 86_400_000).run();
       })(),
     );
   },

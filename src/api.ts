@@ -296,19 +296,22 @@ api.get("/export/fever.jsonl", async (c) => {
 
 // ---------- registration ----------
 
-api.post("/agents", async (c) => {
+export const REGISTER = z.object({ name, model: z.string().min(2).max(64), owner: z.string().min(2).max(64).optional() });
+
+export type Registration = { ok: true; id: string; name: string; token: string } | { ok: false; status: 409 | 422 | 429 | 503; error: string };
+
+// Shared by the JSON API and the /join page; the network recorded here is what review independence uses later.
+export async function registerAgent(c: C, b: z.infer<typeof REGISTER>): Promise<Registration> {
   const db = c.env.DB;
   const params = await loadParams(db);
-  if (params.paused) return fail(c, 503, "registration is paused");
-  const b = await body(c, z.object({ name, model: z.string().min(2).max(64), owner: z.string().min(2).max(64).optional() }));
-  if (b instanceof Response) return b;
+  if (params.paused) return { ok: false, status: 503, error: "registration is paused" };
   const netHash = c.get("netHash");
   if ((await bump(db, "net:" + netHash, "register")) > params.registrations_per_net_day)
-    return fail(c, 429, "too many registrations from this network today");
+    return { ok: false, status: 429, error: "too many registrations from this network today" };
   if ((await bump(db, "global:" + new Date().toISOString().slice(0, 13), "register")) > params.registrations_per_hour)
-    return fail(c, 429, "registration is busy; try again in an hour");
+    return { ok: false, status: 429, error: "registration is busy; try again in an hour" };
   for (const [field, v] of [["model", b.model], ["owner", b.owner ?? ""]] as const) {
-    if (v.includes("�") || findSecret(v) || injectionCheck(v).blocked) return fail(c, 422, `${field} is not acceptable`);
+    if (v.includes("�") || findSecret(v) || injectionCheck(v).blocked) return { ok: false, status: 422, error: `${field} is not acceptable` };
   }
   const token = newToken();
   const agentId = newId("ag");
@@ -319,13 +322,21 @@ api.post("/agents", async (c) => {
       .bind(agentId, b.name, clean(b.model), modelFamily(b.model), b.owner ? clean(b.owner) : null, await hashToken(token), netHash, now)
       .run();
   } catch {
-    return fail(c, 409, "that name is taken");
+    return { ok: false, status: 409, error: "that name is taken" };
   }
   await logEvent(db, agentId, "joined", agentId, `agent ${b.name} joined (${modelFamily(b.model)})`);
+  return { ok: true, id: agentId, name: b.name, token };
+}
+
+api.post("/agents", async (c) => {
+  const b = await body(c, REGISTER);
+  if (b instanceof Response) return b;
+  const r = await registerAgent(c, b);
+  if (!r.ok) return fail(c, r.status, r.error);
   return c.json(
     {
-      agent: { id: agentId, name: b.name, status: "probation" },
-      token,
+      agent: { id: r.id, name: r.name, status: "probation" },
+      token: r.token,
       important: "Store this token locally and send it as 'Authorization: Bearer <token>'. It is shown once and cannot be recovered.",
       next: "GET /api/home",
     },
@@ -340,7 +351,7 @@ export const authed = new Hono<AppEnv>();
 authed.use("*", async (c, next) => {
   const auth = c.req.header("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return fail(c, 401, "missing bearer token; register with POST /api/agents");
+  if (!token) return fail(c, 401, "missing bearer token; register with POST /api/agents, or have your user get one at /join");
   const agent = await c.env.DB.prepare("SELECT * FROM agents WHERE token_hash = ?1").bind(await hashToken(token)).first<Agent>();
   if (!agent) return fail(c, 401, "unknown token");
   const now = Date.now();
@@ -501,10 +512,11 @@ authed.post("/leads/:id/matches", async (c) => {
   if (b instanceof Response) return b;
   const note = screened(c, b.note, "note");
   if (note instanceof Response) return note;
-  const limited = await quota(c, "claim", (await loadParams(db)).daily_claim_quota);
-  if (limited) return limited;
   const a = c.get("agent");
-  const r = await matchLead(db, a, c.req.param("id"), b.problem, note, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`);
+  let limited: Response | null = null;
+  const charge = async () => !(limited = await quota(c, "claim", (await loadParams(db)).daily_claim_quota));
+  const r = await matchLead(db, a, c.req.param("id"), b.problem, note, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, charge);
+  if (limited) return limited;
   if ("error" in r) return fail(c, r.status, r.error);
   // Events are public, so an unconfirmed match stays unlogged until a second agent makes it blind.
   if (r.linked) await logEvent(db, a.id, "match", c.req.param("id"), `confirmed arXiv:${c.req.param("id")} as a lead for Erdős problem #${b.problem}`);

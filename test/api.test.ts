@@ -103,12 +103,26 @@ beforeEach(async () => {
       );
     if (url === "https://www.erdosproblems.com/forum/thread/786/proof-claims") return html("<p>A proof claimed by D.&nbsp;Person (using a model).</p>");
     if (url === "https://www.erdosproblems.com/forum/thread/900/proof-claims") return html("<p>There are 0 proof claims for this problem.</p>");
+    if (url === "https://www.erdosproblems.com/forum/thread/81/proof-claims")
+      return html("<p>A proof claimed by Jacobo Obinna Okechukwu Lin (using a model). Summary: ...</p><p>Comment: Obinna Okechukwu has a related paper.</p>");
+    if (url === "https://www.erdosproblems.com/forum/thread/2/proof-claims") return html("<p>A proof claimed by Someone Else (using a model). See arXiv:2609.32140v2.</p>");
     if (url.startsWith("https://source.example/pdf")) return new Response("%PDF", { headers: { "content-type": "application/pdf" } });
     if (url.startsWith("https://source.example/redirect-internal")) return new Response(null, { status: 302, headers: { location: "https://127.0.0.1/admin" } });
     return new Response("not found", { status: 404 });
   });
 });
 afterEach(() => vi.restoreAllMocks());
+
+// Makes matching outbound requests fail until the returned function is called.
+function failFetch(match: (url: string) => boolean, status = 503) {
+  const spy = vi.mocked(globalThis.fetch);
+  const orig = spy.getMockImplementation()!;
+  spy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    return match(url) ? new Response("unavailable", { status }) : orig(input, init);
+  });
+  return () => spy.mockImplementation(orig);
+}
 
 describe("base path", () => {
   it("serves only under the prefix and links with it", async () => {
@@ -285,9 +299,15 @@ describe("snapshots and the mechanical check", () => {
     expect((await call("GET", "/api/home", { token: a.token })).json.papers_to_match.map((p: any) => p.lead_id)).toEqual(["2610.11642"]);
     expect((await match(a.token, "2610.11642", "900")).json).toMatchObject({ recorded: true, linked: false });
     expect((await match(a.token, "2610.11642", "900")).status).toBe(409);
+    expect((await match(a.token, "2610.11642", "901")).json.error).toMatch(/one match per paper/);
     expect((await match(twin.token, "2610.11642", "900")).json).toMatchObject({ independent_agreements: 0, linked: false });
     expect((await db().prepare("SELECT COUNT(*) AS n FROM events WHERE summary LIKE '%2610.11642%'").first<any>()).n).toBe(0);
+    expect((await call("GET", "/api/leads?days=120")).json.leads.find((l: any) => l.id === "2610.11642").matched).toEqual([]);
     expect((await call("GET", "/api/home", { token: a.token })).json.papers_to_match).toEqual([]);
+    expect((await call("GET", "/api/home", { token: b.token })).json.papers_to_match.map((p: any) => p.lead_id)).toEqual(["2610.11642"]);
+    const restore = failFetch((url) => url.includes("problems.yaml"));
+    expect((await match(b.token, "2610.11642", "900")).status).toBe(503);
+    restore();
     const linked = await match(b.token, "2610.11642", "900");
     expect(linked.json).toMatchObject({ independent_agreements: 2, linked: true });
     expect((await call("GET", `/api/claims/${linked.json.claim_id}`)).json.claim.quoted_from).toBe("https://www.erdosproblems.com/900");
@@ -300,12 +320,19 @@ describe("snapshots and the mechanical check", () => {
     expect((await match(a.token, "2601.00000", "5")).status).toBe(404);
   });
 
-  it("marks papers whose authors already filed a proof claim on erdosproblems.com", async () => {
+  it("marks papers whose authors filed a proof claim, rechecks young leads and backs off on errors", async () => {
     const a = await register("192.0.2.22");
     await call("POST", "/api/admin/leads", { token: ADMIN });
-    expect(await checkFiled(db(), "test-ua", Date.now(), 10)).toBe(3);
+    const now = Date.now();
+    const restore = failFetch((url) => url.endsWith("/thread/786/proof-claims"), 500);
+    expect(await checkFiled(db(), "test-ua", now, 10)).toBe(2);
+    expect(await checkFiled(db(), "test-ua", now + 60_000, 10)).toBe(0);
+    restore();
+    expect(await checkFiled(db(), "test-ua", now + 13 * 3_600_000, 10)).toBe(1);
+    expect(await checkFiled(db(), "test-ua", now + 4 * 86_400_000, 10)).toBe(3);
     const leads = (await call("GET", "/api/leads?days=120")).json.leads;
     expect(leads.find((l: any) => l.id === "2609.37471").filed).toEqual(["786"]);
+    expect(leads.find((l: any) => l.id === "2609.32140").filed).toEqual(["2"]);
     expect(leads.find((l: any) => l.id === "2609.20871").filed).toEqual([]);
     const paper = (await call("GET", "/api/home", { token: a.token })).json.new_papers_to_check.find((p: any) => p.arxiv.endsWith("2609.37471"));
     expect(paper.hint).toMatch(/already filed/);
@@ -508,17 +535,25 @@ async function mcp(token?: string, ip = "198.51.100.9") {
 }
 const text = (r: any) => r.content[0].text as string;
 
+const rawMcp = (body: string) =>
+  (exports as any).default.fetch(
+    new Request(BASE + "/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "cf-connecting-ip": "198.51.100.9" }, body }),
+  ) as Promise<Response>;
+
 describe("mcp", () => {
-  it("serves the API as MCP tools, with the token as a header or an argument", async () => {
+  it("serves the API as MCP tools; tokens come from /join and an argument beats a header", async () => {
     const client = await mcp();
     const tools = (await client.listTools()).tools.map((t) => t.name);
-    expect(tools).toEqual(expect.arrayContaining(["guide", "register", "home", "snapshot", "add_evidence", "next_review", "submit_review", "match_paper", "vote"]));
-    expect(text(await client.callTool({ name: "guide", arguments: {} }))).toContain(BASE + "/api/");
-    const reg = await client.callTool({ name: "register", arguments: { name: "mcp-agent-1", model: "claude-opus-5-5" } });
-    const token = JSON.parse(text(reg)).token as string;
-    expect(JSON.parse(text(await client.callTool({ name: "home", arguments: { token } }))).you.name).toBe("mcp-agent-1");
-    expect((await client.callTool({ name: "home", arguments: {} })).isError).toBe(true);
-    const authed = await mcp(token);
+    expect(tools).toEqual(expect.arrayContaining(["guide", "home", "snapshot", "add_evidence", "next_review", "submit_review", "match_paper", "vote"]));
+    expect(tools).not.toContain("register");
+    expect(text(await client.callTool({ name: "guide", arguments: {} }))).toContain(BASE + "/join");
+    const missing = await client.callTool({ name: "home", arguments: {} });
+    expect(missing.isError).toBe(true);
+    expect(text(missing)).toContain(BASE + "/join");
+    const [me, other] = [await register("198.51.100.9"), await register("198.51.101.9")];
+    expect(JSON.parse(text(await client.callTool({ name: "home", arguments: { token: me.token } }))).you.name).toBe(me.name);
+    const authed = await mcp(other.token);
+    expect(JSON.parse(text(await authed.callTool({ name: "home", arguments: { token: me.token } }))).you.name).toBe(me.name);
     const inv = await seedInvestigation();
     const snap = JSON.parse(text(await authed.callTool({ name: "snapshot", arguments: { url: "https://science.nasa.gov/moon" } })));
     const ev = await authed.callTool({
@@ -526,9 +561,38 @@ describe("mcp", () => {
       arguments: { claim_id: inv.claims[0], snapshot_id: snap.snapshot_id, quote: "The Moon is an average of 238,855 miles (384,400 km) away from Earth.", stance: "supports" },
     });
     expect(ev.isError).toBeFalsy();
-    expect((await db().prepare("SELECT a.name FROM evidence e JOIN agents a ON a.id = e.agent_id").first<any>()).name).toBe("mcp-agent-1");
+    expect((await db().prepare("SELECT a.name FROM evidence e JOIN agents a ON a.id = e.agent_id").first<any>()).name).toBe(other.name);
     await client.close();
     await authed.close();
+  });
+
+  it("rejects oversized bodies and JSON-RPC batches", async () => {
+    expect((await rawMcp("x".repeat(70_000))).status).toBe(413);
+    expect((await rawMcp(JSON.stringify([{ jsonrpc: "2.0", id: 1, method: "tools/list" }]))).status).toBe(400);
+  });
+});
+
+describe("join", () => {
+  it("creates a token from the browser form, tied to the visitor's network", async () => {
+    expect((await call("GET", "/join")).text).toContain("Get a token for your agent");
+    const made = await call("POST", "/join", { ip: "203.0.114.5", form: { name: "joined-agent", model: "gpt-6", owner: "Ada" } });
+    expect(made.status).toBe(201);
+    expect(made.headers.get("cache-control")).toBe("no-store");
+    const token = made.text.match(/cb_[A-Za-z0-9_-]{20,}/)?.[0];
+    expect((await call("GET", "/api/me", { token })).json.agent).toMatchObject({ name: "joined-agent", owner: "Ada", status: "probation" });
+    const viaApi = await register("203.0.114.9");
+    const nets = await db().prepare("SELECT COUNT(DISTINCT net_hash) AS n FROM agents WHERE name IN ('joined-agent', ?1)").bind(viaApi.name).first<any>();
+    expect(nets.n).toBe(1);
+    expect((await call("POST", "/join", { ip: "203.0.114.5", form: { name: "x", model: "gpt-6" } })).status).toBe(400);
+    expect((await call("POST", "/join", { ip: "203.0.114.5", form: { name: "joined-agent", model: "gpt-6" } })).status).toBe(409);
+    const foreign = await (exports as any).default.fetch(
+      new Request(BASE + "/join", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://evil.example", "cf-connecting-ip": "203.0.114.5" },
+        body: "name=sneaky-agent&model=gpt-6",
+      }),
+    );
+    expect(foreign.status).toBe(403);
   });
 });
 

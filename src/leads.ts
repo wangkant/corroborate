@@ -20,7 +20,7 @@ export interface Lead {
 
 const tag = (xml: string, name: string) => decodeEntities(xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`))?.[1] ?? "").replace(/\s+/g, " ").trim();
 const list = (s: string | null) => (s ? s.split(",").filter(Boolean) : []);
-const fold = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").toLowerCase();
+const fold = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").toLowerCase();
 
 export function problemNumbers(text: string): string[] {
   return [...new Set([...text.matchAll(PROBLEM_REF)].map((m) => String(Number(m[1]))))];
@@ -72,38 +72,58 @@ export async function refreshLeads(
 
 export const proofClaimsUrl = (n: string) => `https://www.erdosproblems.com/forum/thread/${n}/proof-claims`;
 
-// Authors now often file their own proof claims on erdosproblems.com; those papers are known there already.
+const RECHECK_MS = 3 * 86_400_000;
+const FRESH_MS = 45 * 86_400_000;
+const RETRY_MS = 12 * 3_600_000;
+const CLAIMANT = /A proof claimed by\s+(.{2,300}?)\s*(?:\(using|Summary:|\|)/g;
+
+// Only the claimant line of a proof claim counts: a name elsewhere on the page (comments, references) is not a filing.
+export function filedOnPage(html: string, arxivId: string, authors: string): boolean {
+  const text = decodeEntities(html.slice(0, 400_000).replace(/<[^>]+>/g, " "));
+  if (new RegExp(`(?<![\\d.])${arxivId.replace(".", "\\.")}(?!\\d)`).test(text)) return true;
+  const claimants = new Set([...text.matchAll(CLAIMANT)].flatMap((m) => m[1]!.split(/,|\band\b|&/).map((n) => fold(n.trim()))));
+  return authors.split(",").map((a) => fold(a.trim())).some((a) => a.includes(" ") && claimants.has(a));
+}
+
+// Authors often file their own proof claims on erdosproblems.com days after posting, so young leads are checked again.
 export async function checkFiled(db: D1Database, userAgent: string, now = Date.now(), limit = 3): Promise<number> {
   const { results } = await db
-    .prepare("SELECT id, authors, problems, matched FROM leads WHERE (problems != '' OR matched != '') AND site_checked_at IS NULL ORDER BY published DESC LIMIT ?1")
-    .bind(limit)
-    .all<{ id: string; authors: string; problems: string; matched: string }>();
+    .prepare(
+      `SELECT id, authors, problems, matched, filed FROM leads
+       WHERE (problems != '' OR matched != '') AND (site_tried_at IS NULL OR site_tried_at < ?1)
+         AND (site_checked_at IS NULL OR (published > ?2 AND site_checked_at < ?3))
+       ORDER BY site_checked_at IS NOT NULL, published DESC LIMIT ?4`,
+    )
+    .bind(now - RETRY_MS, now - FRESH_MS, now - RECHECK_MS, limit)
+    .all<{ id: string; authors: string; problems: string; matched: string; filed: string }>();
   let checked = 0;
   for (const l of results) {
-    const names = [l.id, ...l.authors.split(",").map((a) => a.trim()).filter((a) => a.includes(" ") && a.length >= 5)].map(fold);
-    const filed: string[] = [];
+    // Marked before fetching, so a failing or killed check waits half a day instead of blocking the queue.
+    await db.prepare("UPDATE leads SET site_tried_at = ?2 WHERE id = ?1").bind(l.id, now).run();
+    const filed = new Set(list(l.filed));
     try {
       for (const n of [...list(l.problems), ...list(l.matched)].slice(0, 4)) {
+        if (filed.has(n)) continue;
         const res = await fetch(proofClaimsUrl(n), { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(15_000) });
         if (res.status === 404) continue;
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const page = fold(decodeEntities((await res.text()).slice(0, 400_000)));
-        if (names.some((name) => page.includes(name))) filed.push(n);
+        if (filedOnPage(await res.text(), l.id, l.authors)) filed.add(n);
       }
     } catch {
       continue;
     }
-    await db.prepare("UPDATE leads SET filed = ?2, site_checked_at = ?3 WHERE id = ?1").bind(l.id, filed.join(","), now).run();
+    await db.prepare("UPDATE leads SET filed = ?2, site_checked_at = ?3 WHERE id = ?1").bind(l.id, [...filed].join(","), now).run();
     checked++;
   }
   return checked;
 }
 
 export type MatchResult =
-  | { error: string; status: 404 | 409 }
+  | { error: string; status: 404 | 409 | 429 | 503 }
   | { recorded: true; independent_agreements: number; linked: boolean; claim_id?: string; message: string };
 
 // A match goes public only when an agent from another network and owner names the same problem for the same paper.
+// One match per agent per paper, so guessing several problems for one paper cannot force a link.
 export async function matchLead(
   db: D1Database,
   me: { id: string; net_hash: string; owner: string | null },
@@ -111,16 +131,15 @@ export async function matchLead(
   problem: string,
   note: string,
   userAgent: string,
+  charge: () => Promise<boolean>,
   now = Date.now(),
 ): Promise<MatchResult> {
   const lead = await db.prepare("SELECT problems, matched FROM leads WHERE id = ?1").bind(leadId).first<{ problems: string; matched: string }>();
   if (!lead) return { error: "no such paper in /api/leads", status: 404 };
   if ([...list(lead.problems), ...list(lead.matched)].includes(problem)) return { error: `this paper is already linked to problem #${problem}`, status: 409 };
-  const ins = await db
-    .prepare("INSERT OR IGNORE INTO lead_matches (lead_id, problem, agent_id, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
-    .bind(leadId, problem, me.id, note, now)
-    .run();
-  if (!ins.meta.changes) return { error: "you already matched this paper to that problem", status: 409 };
+  const mine = await db.prepare("SELECT problem FROM lead_matches WHERE lead_id = ?1 AND agent_id = ?2").bind(leadId, me.id).first<{ problem: string }>();
+  if (mine) return { error: `you already matched this paper to problem #${mine.problem}; each agent makes one match per paper`, status: 409 };
+  if (!(await charge())) return { error: "daily quota used up", status: 429 };
   const agree = await db
     .prepare(
       `SELECT COUNT(*) AS n FROM lead_matches m JOIN agents a ON a.id = m.agent_id
@@ -129,11 +148,29 @@ export async function matchLead(
     .bind(leadId, problem, me.id, me.net_hash, me.owner)
     .first<{ n: number }>();
   const n = agree?.n ?? 0;
+  let covered: string[] = [];
+  if (n) {
+    try {
+      covered = (await claimsForProblems(db, [problem], userAgent, now)).covered;
+    } catch {
+      return { error: "the Erdős problems database could not be reached, so your match was not recorded; try again later", status: 503 };
+    }
+  }
+  const ins = await db
+    .prepare("INSERT OR IGNORE INTO lead_matches (lead_id, problem, agent_id, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+    .bind(leadId, problem, me.id, note, now)
+    .run();
+  if (!ins.meta.changes) return { error: "you already matched this paper", status: 409 };
   if (!n) return { recorded: true, independent_agreements: 0, linked: false, message: "Recorded. It goes public when an agent from another network and owner makes the same match." };
-  const { covered } = await claimsForProblems(db, [problem], userAgent, now);
   if (!covered.includes(problem))
     return { recorded: true, independent_agreements: n, linked: false, message: `Problem #${problem} is not listed as open in the Erdős problems database, so there is nothing to check here.` };
-  await db.prepare("UPDATE leads SET matched = ?2, site_checked_at = NULL WHERE id = ?1").bind(leadId, [...list(lead.matched), problem].join(",")).run();
+  await db
+    .prepare(
+      `UPDATE leads SET matched = CASE WHEN matched = '' THEN ?2 ELSE matched || ',' || ?2 END, site_checked_at = NULL, site_tried_at = NULL
+       WHERE id = ?1 AND ',' || matched || ',' NOT LIKE '%,' || ?2 || ',%'`,
+    )
+    .bind(leadId, problem)
+    .run();
   const claim = await claimFor(db, problem);
   return { recorded: true, independent_agreements: n, linked: true, claim_id: claim?.id, message: `Linked. Check the paper against claim ${claim?.id}.` };
 }

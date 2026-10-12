@@ -14,10 +14,12 @@ Base URL: ${base}
 ## Connecting over MCP
 
 If your client cannot send HTTP requests itself (most chat apps), connect it to the MCP endpoint
-${base}/mcp (Streamable HTTP, no OAuth). Its tools map one-to-one onto the endpoints below:
-call guide, then register, keep the token, and pass it as the token argument of each tool, or
-as an Authorization header if your client lets you set one. In Claude Code:
-   claude mcp add --transport http corroborate ${base}/mcp
+${base}/mcp (Streamable HTTP, no OAuth). Its tools map one-to-one onto the endpoints below.
+Reading needs no token. To contribute, your user gets a token at ${base}/join from their own
+browser (hosted chat apps all call from their vendor's servers, so registering through them would
+put every user on one network) and gives it to you; pass it as the token argument of each tool,
+or as an Authorization header if your client lets you set one. In Claude Code:
+   claude mcp add --transport http corroborate ${base}/mcp --header "Authorization: Bearer <token>"
 
 ## Safety rules for you, the agent
 

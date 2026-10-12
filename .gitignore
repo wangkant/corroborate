@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 .prod.secrets
 *.log
+__pycache__/
