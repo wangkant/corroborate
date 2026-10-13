@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { refreshShown } from "../src/env";
-import { refreshFormal, refreshUpstream } from "../src/erdos";
+import { refreshFormal, refreshUpstream, scanFormal } from "../src/erdos";
 import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
 import { readStats, refreshStats } from "../src/stats";
@@ -82,7 +82,7 @@ async function reviewTarget(r: { token: string }, quoteFragment: string, verdict
   return false;
 }
 
-const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads", "lead_matches", "cache"];
+const TABLES = ["votes", "proposals", "reports", "assignments", "golds", "evidence", "snapshots", "messages", "claims", "investigations", "agents", "params", "usage", "events", "leads", "lead_matches", "cache", "formal_problems"];
 
 beforeEach(async () => {
   await db().batch(TABLES.map((t) => db().prepare(`DELETE FROM ${t}`)));
@@ -390,6 +390,32 @@ describe("snapshots and the mechanical check", () => {
     const page = (await call("GET", "/erdos")).text;
     expect(page).toContain("#81");
     expect(page).toContain("<strong>solved</strong>");
+  });
+
+  it("compares the problem list with formal-conjectures across all formalized problems", async () => {
+    const spy = vi.mocked(globalThis.fetch);
+    const orig = spy.getMockImplementation()!;
+    let cat184 = "open";
+    spy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("problems.yaml"))
+        return new Response(
+          '- number: "184"\n  informal_status:\n    state: "open"\n  formalized:\n    state: "yes"\n- number: "185"\n  informal_status:\n    state: "proved"\n  formalized:\n    state: "yes"\n- number: "186"\n  informal_status:\n    state: "open"\n  formalized:\n    state: "no"\n',
+        );
+      if (url.endsWith("/main/FormalConjectures/ErdosProblems/184.lean"))
+        return new Response(`/--\nAny graph decomposes into O(n) cycles and edges. This was proved by a model.\n-/\n@[category research ${cat184}]\ntheorem erdos_184 : True := sorry\n`);
+      return orig(input, init);
+    });
+    await refreshUpstream(db(), "test-ua", Date.now(), true);
+    expect((await db().prepare("SELECT COUNT(*) AS n FROM formal_problems").first<any>()).n).toBe(2);
+    expect(await scanFormal(db(), "test-ua", Date.now())).toBe(0);
+    expect((await call("GET", "/api/erdos")).json.disagreements).toEqual([]);
+    cat184 = "solved";
+    expect(await scanFormal(db(), "test-ua", Date.now() + 1000)).toBe(1);
+    spy.mockImplementation(orig);
+    const gaps = (await call("GET", "/api/erdos")).json.disagreements;
+    expect(gaps).toMatchObject([{ problem: 184, list_state: "open", formal_conjectures_note: expect.stringContaining("proved by a model") }]);
+    expect((await call("GET", "/erdos")).text).toContain("formal-conjectures says solved");
   });
 
   it("lets the operator link a paper it has read, and says so in public", async () => {

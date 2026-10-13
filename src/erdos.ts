@@ -46,13 +46,13 @@ function lookup(yaml: string, n: string): ProblemInfo | null {
 
 export const isOpenState = (state: string) => OPEN_STATES.has(state);
 
-function allStates(yaml: string): Map<string, string> {
-  const out = new Map<string, string>();
+function allStates(yaml: string): Map<string, { state: string; formalized: boolean }> {
+  const out = new Map<string, { state: string; formalized: boolean }>();
   // The file starts with its first entry, so a newline is added to split it like the rest.
   for (const block of ("\n" + yaml).split('\n- number: "').slice(1)) {
     const n = block.slice(0, block.indexOf('"'));
     const state = block.match(/informal_status:\n {4}state: "([^"]+)"/)?.[1];
-    if (state) out.set(n, state);
+    if (state) out.set(n, { state, formalized: block.match(/formalized:\n {4}state: "([^"]+)"/)?.[1] === "yes" });
   }
   return out;
 }
@@ -69,13 +69,21 @@ export async function refreshUpstream(db: D1Database, userAgent: string, now = D
   const { results } = await db
     .prepare("SELECT id, problem, upstream_state FROM claims WHERE problem IS NOT NULL AND status = 'visible'")
     .all<{ id: string; problem: string; upstream_state: string | null }>();
-  if (!results.length) return 0;
   const res = await fetch(DATA, { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw new Error(`problems database returned HTTP ${res.status}`);
   const states = allStates(await res.text());
+  // One statement for the whole list: the formalized problems that scanFormal compares with formal-conjectures.
+  const formalized = Object.fromEntries([...states].filter(([, v]) => v.formalized).map(([n, v]) => [n, v.state]));
+  await db
+    .prepare(
+      `INSERT INTO formal_problems (problem, list_state) SELECT key, value FROM json_each(?1) WHERE true
+       ON CONFLICT (problem) DO UPDATE SET list_state = excluded.list_state`,
+    )
+    .bind(JSON.stringify(formalized))
+    .run();
   let settled = 0;
   for (const cl of results) {
-    const state = states.get(cl.problem);
+    const state = states.get(cl.problem)?.state;
     if (!state || state === cl.upstream_state) continue;
     await db.prepare("UPDATE claims SET upstream_state = ?2, upstream_changed_at = ?3 WHERE id = ?1").bind(cl.id, state, now).run();
     // The first reading only records the starting point; later changes to a settled state are news.
@@ -150,6 +158,49 @@ export async function erdosOverview(db: D1Database): Promise<ErdosRow[]> {
        ORDER BY CAST(c.problem AS INTEGER) LIMIT 500`,
     )
     .all<ErdosRow>();
+  return results;
+}
+
+// A few formal-conjectures files per run, oldest reading first, so the whole set is compared every few hours.
+export async function scanFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 12): Promise<number> {
+  const { results } = await db
+    .prepare(
+      `SELECT problem, fc_state FROM formal_problems WHERE list_state IN ('open', 'falsifiable', 'verifiable', 'decidable')
+       ORDER BY checked_at IS NOT NULL, checked_at LIMIT ?1`,
+    )
+    .bind(limit)
+    .all<{ problem: string; fc_state: string | null }>();
+  let newlySolved = 0;
+  for (const row of results) {
+    await db.prepare("UPDATE formal_problems SET checked_at = ?2 WHERE problem = ?1").bind(row.problem, now).run();
+    const res = await fetch(FORMAL_MAIN(row.problem), { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) continue;
+    const { state, statement } = readLean(await res.text(), row.problem);
+    if (!state) continue;
+    await db.prepare("UPDATE formal_problems SET fc_state = ?2, note = ?3 WHERE problem = ?1").bind(row.problem, state, statement).run();
+    if (row.fc_state && row.fc_state !== state && state === "solved") {
+      newlySolved++;
+      await logEvent(db, null, "upstream", null, `formal-conjectures now marks Erdős problem #${row.problem} as solved; the problem list still says open`);
+    }
+  }
+  return newlySolved;
+}
+
+export interface Disagreement {
+  problem: string;
+  list_state: string;
+  note: string | null;
+  checked_at: number;
+}
+
+export async function disagreements(db: D1Database): Promise<Disagreement[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT problem, list_state, note, checked_at FROM formal_problems
+       WHERE fc_state = 'solved' AND list_state IN ('open', 'falsifiable', 'verifiable', 'decidable')
+       ORDER BY CAST(problem AS INTEGER) LIMIT 300`,
+    )
+    .all<Disagreement>();
   return results;
 }
 

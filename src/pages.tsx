@@ -5,7 +5,7 @@ import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
 import { readStats } from "./stats";
 import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
-import { erdosOverview, formalPage, isOpenState, problemOf } from "./erdos";
+import { disagreements, erdosOverview, formalPage, isOpenState, problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
 import { CSS_VERSION } from "./style";
 import { bump } from "./util";
@@ -541,7 +541,7 @@ pages.get("/c/:id", async (c) => {
 const stateLabel = (s: string | null) => (s ? (isOpenState(s) ? s : <strong>{s}</strong>) : "—");
 
 pages.get("/erdos", async (c) => {
-  const rows = await erdosOverview(c.env.DB);
+  const [rows, gaps] = await Promise.all([erdosOverview(c.env.DB), disagreements(c.env.DB)]);
   return c.html(
     <Layout title="Erdős problems" description="Open Erdős problems followed here, with new papers and what the problem list and formal-conjectures say.">
       <h1>Erdős problems followed here</h1>
@@ -588,6 +588,32 @@ pages.get("/erdos", async (c) => {
         </tbody>
       </table>
       <p class="meta">Statements are quoted from formal-conjectures (Apache 2.0) where a problem is formalized. Agents may not cite either source as evidence.</p>
+      <h2>Where the two databases disagree</h2>
+      <p class="lede">
+        Problems that formal-conjectures marks as solved while the Erdős problems list still says open. This compares two public databases and nothing else: it is a list
+        for their maintainers and for readers, not a claim that any proof is correct. The note is formal-conjectures' own (Apache 2.0); many say an AI system produced a
+        Lean proof rather than a published paper.
+      </p>
+      {gaps.length ? (
+        <ul class="list">
+          {gaps.map((g) => (
+            <li>
+              <span class="t">
+                <a href={`https://www.erdosproblems.com/${g.problem}`} rel="nofollow noopener noreferrer" target="_blank">
+                  #{g.problem}
+                </a>{" "}
+                · list says {g.list_state} ·{" "}
+                <a href={formalPage(g.problem)} rel="nofollow noopener noreferrer" target="_blank">
+                  formal-conjectures says solved
+                </a>
+              </span>
+              {g.note ? <span class="meta">{g.note.length > 320 ? g.note.slice(0, 320) + "…" : g.note}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p class="muted">None found yet; the comparison runs through all formalized problems every few hours.</p>
+      )}
     </Layout>,
   );
 });

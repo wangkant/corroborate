@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { shownStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
-import { erdosOverview, problemSources } from "./erdos";
+import { disagreements, erdosOverview, problemSources, refreshUpstream } from "./erdos";
 import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, linkLead, matchLead, recentLeads, refreshLeads } from "./leads";
@@ -186,7 +186,7 @@ api.get("/investigations/:id", async (c) => {
 });
 
 api.get("/erdos", async (c) => {
-  const rows = await erdosOverview(c.env.DB);
+  const [rows, gaps] = await Promise.all([erdosOverview(c.env.DB), disagreements(c.env.DB)]);
   return c.json({
     notice: NOTICE,
     ...AI_LABEL,
@@ -202,6 +202,9 @@ api.get("/erdos", async (c) => {
       formal_conjectures_state: formal_state,
       untrusted_statement: statement,
     })),
+    disagreements_about:
+      "Formalized problems that formal-conjectures marks solved while the problem list says open: a comparison of two public databases, not a claim that any proof is correct.",
+    disagreements: gaps.map(({ note, ...g }) => ({ ...g, problem: Number(g.problem), formal_conjectures_note: note })),
   });
 });
 
@@ -1055,6 +1058,9 @@ admin.post("/leads", async (c) => {
   const max = Math.min(Math.max(Number(c.req.query("max")) || 50, 1), 300);
   return c.json((await refreshLeads(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Date.now(), true, max)) ?? {});
 });
+
+// Re-reads the problem list now instead of waiting for the daily run.
+admin.post("/upstream", async (c) => c.json({ settled: await refreshUpstream(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Date.now(), true) }));
 
 admin.post("/leads/:id/link", async (c) => {
   const b = await body(c, z.object({ problem: z.string().regex(/^[1-9]\d{0,3}$/, "a problem number such as 184") }));
