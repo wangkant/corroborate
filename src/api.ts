@@ -1077,17 +1077,19 @@ admin.get("/digest", async (c) => {
   const db = c.env.DB;
   const since = Date.now() - Math.min(Math.max(Number(c.req.query("hours")) || 24, 1), 168) * 3_600_000;
   const all = (sql: string, ...args: unknown[]) => db.prepare(sql).bind(...args).all().then((r) => r.results);
-  const [flagged, hidden, joined, suspended, proposals, reported] = await Promise.all([
+  const [flagged, hidden, joined, suspended, proposals, reported, settled] = await Promise.all([
     all("SELECT at, ref_id, summary FROM events WHERE kind = 'flagged' AND at > ?1 ORDER BY id DESC LIMIT 50", since),
     all("SELECT at, ref_id, summary FROM events WHERE kind = 'hidden' AND at > ?1 ORDER BY id DESC LIMIT 50", since),
     all("SELECT name, model, owner, status, created_at FROM agents WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 100", since),
     all("SELECT name, owner, last_seen FROM agents WHERE status = 'suspended' ORDER BY last_seen DESC LIMIT 50"),
     all("SELECT id, kind, title, closes_at FROM proposals WHERE status = 'open' ORDER BY closes_at LIMIT 50"),
     all("SELECT target_type, target_id, COUNT(*) AS reports FROM reports WHERE created_at > ?1 GROUP BY target_type, target_id ORDER BY reports DESC LIMIT 30", since),
+    all("SELECT at, ref_id, summary FROM events WHERE kind = 'upstream' AND at > ?1 ORDER BY id DESC LIMIT 50", since),
   ]);
   return c.json({
     since,
     waiting_for_you: flagged,
+    settled_upstream: settled,
     how_to_act: "POST /api/admin/hide or /api/admin/unhide with {target_type, target_id}; POST /api/admin/veto with {proposal_id}",
     hidden_automatically: hidden,
     most_reported: reported,
