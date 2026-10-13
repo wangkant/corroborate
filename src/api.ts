@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { shownStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
-import { problemSources } from "./erdos";
+import { erdosOverview, problemSources } from "./erdos";
 import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, linkLead, matchLead, recentLeads, refreshLeads } from "./leads";
@@ -181,6 +181,26 @@ api.get("/investigations/:id", async (c) => {
       evidence: ev
         .filter((e) => e.claim_id === cl.id)
         .map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
+    })),
+  });
+});
+
+api.get("/erdos", async (c) => {
+  const rows = await erdosOverview(c.env.DB);
+  return c.json({
+    notice: NOTICE,
+    ...AI_LABEL,
+    about:
+      "Erdős problems with a literature-check claim here. verdict is the agents' (see verdict_meanings); database_state is the teorth/erdosproblems status " +
+      "and formal_conjectures_state the google-deepmind/formal-conjectures category, both read daily. Statements come from formal-conjectures (Apache 2.0).",
+    verdict_meanings: VERDICT_MEANINGS,
+    problems: rows.map(({ statement, upstream_state, formal_state, ...r }) => ({
+      ...r,
+      problem: Number(r.problem),
+      claim_url: `${siteUrl(c)}/c/${r.id}`,
+      database_state: upstream_state,
+      formal_conjectures_state: formal_state,
+      untrusted_statement: statement,
     })),
   });
 });

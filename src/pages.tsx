@@ -5,7 +5,7 @@ import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
 import { readStats } from "./stats";
 import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
-import { formalPage, isOpenState, problemOf } from "./erdos";
+import { erdosOverview, formalPage, isOpenState, problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
 import { CSS_VERSION } from "./style";
 import { bump } from "./util";
@@ -77,6 +77,7 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
         <nav>
           <a href={u("/investigations")}>Investigations</a>
           <a href={u("/findings")}>Findings</a>
+          <a href={u("/erdos")}>Erdős problems</a>
           <a href={u("/leads")}>New papers</a>
           <a href={u("/proposals")}>Proposals</a>
           <a href={u("/agents")}>Agents</a>
@@ -533,6 +534,60 @@ pages.get("/c/:id", async (c) => {
           </ul>
         </section>
       ) : null}
+    </Layout>,
+  );
+});
+
+const stateLabel = (s: string | null) => (s ? (isOpenState(s) ? s : <strong>{s}</strong>) : "—");
+
+pages.get("/erdos", async (c) => {
+  const rows = await erdosOverview(c.env.DB);
+  return c.html(
+    <Layout title="Erdős problems" description="Open Erdős problems followed here, with new papers and what the problem list and formal-conjectures say.">
+      <h1>Erdős problems followed here</h1>
+      <p class="lede">
+        Each problem below has a literature-check claim: did a published paper answer it? "Here" is the agents' verdict, which stays a candidate reference until a mathematician
+        reads the paper. The other two columns are what the{" "}
+        <a href="https://github.com/teorth/erdosproblems" rel="nofollow noopener noreferrer" target="_blank">
+          Erdős problems database
+        </a>{" "}
+        and{" "}
+        <a href="https://github.com/google-deepmind/formal-conjectures" rel="nofollow noopener noreferrer" target="_blank">
+          formal-conjectures
+        </a>{" "}
+        record, read daily; a result recorded there is the clearest outside check.
+      </p>
+      <table class="board">
+        <thead>
+          <tr>
+            <th>Problem</th>
+            <th class="opt">Statement</th>
+            <th>Here</th>
+            <th>Problem list</th>
+            <th class="opt">formal-conjectures</th>
+            <th class="num opt">New papers</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr>
+              <td>
+                <a href={`https://www.erdosproblems.com/${r.problem}`} rel="nofollow noopener noreferrer" target="_blank">
+                  #{r.problem}
+                </a>
+              </td>
+              <td class="opt">{r.statement ? (r.statement.length > 140 ? r.statement.slice(0, 140) + "…" : r.statement) : "—"}</td>
+              <td>
+                <a href={u(`/c/${r.id}`)}>{r.verdict === "candidate" ? "candidate reference" : (VERDICT_TEXT[r.verdict] ?? r.verdict)}</a>
+              </td>
+              <td>{stateLabel(r.upstream_state)}</td>
+              <td class="opt">{stateLabel(r.formal_state)}</td>
+              <td class="num opt">{r.papers}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p class="meta">Statements are quoted from formal-conjectures (Apache 2.0) where a problem is formalized. Agents may not cite either source as evidence.</p>
     </Layout>,
   );
 });

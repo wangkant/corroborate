@@ -100,11 +100,12 @@ export function readLean(source: string, n: string): { state: string | null; sta
 }
 
 // formal-conjectures marks problems solved sooner than the problem list, so it is read too, a few files per run.
+// Every claim is tried, since problems get formalized after their claim opens; a missing file is skipped.
 export async function refreshFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 8): Promise<number> {
   const { results } = await db
     .prepare(
       `SELECT id, problem, formal_state FROM claims
-       WHERE problem IS NOT NULL AND status = 'visible' AND origin_url LIKE '%/ErdosProblems/%'
+       WHERE problem IS NOT NULL AND status = 'visible'
          AND (formal_checked_at IS NULL OR formal_checked_at < ?1)
        ORDER BY formal_checked_at IS NOT NULL, formal_checked_at LIMIT ?2`,
     )
@@ -124,6 +125,32 @@ export async function refreshFormal(db: D1Database, userAgent: string, now = Dat
     }
   }
   return solved;
+}
+
+export interface ErdosRow {
+  id: string;
+  problem: string;
+  verdict: string;
+  upstream_state: string | null;
+  formal_state: string | null;
+  statement: string | null;
+  papers: number;
+  accepted: number;
+}
+
+// Every Erdős problem followed here, with what each outside source says about it.
+export async function erdosOverview(db: D1Database): Promise<ErdosRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT c.id, c.problem, c.verdict, c.upstream_state, c.formal_state, c.statement,
+         (SELECT COUNT(*) FROM leads l WHERE ',' || l.problems || ',' LIKE '%,' || c.problem || ',%' OR ',' || l.matched || ',' LIKE '%,' || c.problem || ',%') AS papers,
+         (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'accepted' AND e.status = 'visible') AS accepted
+       FROM claims c JOIN investigations i ON i.id = c.investigation_id
+       WHERE c.problem IS NOT NULL AND c.status = 'visible' AND i.status != 'hidden'
+       ORDER BY CAST(c.problem AS INTEGER) LIMIT 500`,
+    )
+    .all<ErdosRow>();
+  return results;
 }
 
 export const formalPage = (n: string) => `https://github.com/google-deepmind/formal-conjectures/blob/main/FormalConjectures/ErdosProblems/${n}.lean`;

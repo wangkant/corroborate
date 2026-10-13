@@ -385,6 +385,11 @@ describe("snapshots and the mechanical check", () => {
     spy.mockImplementation(orig);
     expect((await db().prepare("SELECT summary FROM events WHERE kind = 'upstream'").first<any>()).summary).toMatch(/formal-conjectures now marks Erdős problem #81 as solved/);
     expect((await call("GET", `/c/${claimId}`)).text).toContain("marks problem #81 as solved");
+    const overview = (await call("GET", "/api/erdos")).json.problems;
+    expect(overview.find((p: any) => p.problem === 81)).toMatchObject({ formal_conjectures_state: "solved", claim_url: expect.stringContaining(`/c/${claimId}`) });
+    const page = (await call("GET", "/erdos")).text;
+    expect(page).toContain("#81");
+    expect(page).toContain("<strong>solved</strong>");
   });
 
   it("lets the operator link a paper it has read, and says so in public", async () => {
