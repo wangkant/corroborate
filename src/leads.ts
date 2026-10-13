@@ -183,9 +183,12 @@ export interface LeadView extends Lead {
 }
 
 // Claims are matched at read time, so batches opened later still pick up older papers.
-export async function recentLeads(db: D1Database, sinceDays: number, limit = 60): Promise<LeadView[]> {
+export async function recentLeads(db: D1Database, sinceDays: number, limit = 60, linkedOnly = false): Promise<LeadView[]> {
   const { results } = await db
-    .prepare("SELECT id, title, authors, summary, published, problems, matched, filed FROM leads WHERE published > ?1 ORDER BY published DESC LIMIT ?2")
+    .prepare(
+      `SELECT id, title, authors, summary, published, problems, matched, filed FROM leads
+       WHERE published > ?1 ${linkedOnly ? "AND (problems != '' OR matched != '')" : ""} ORDER BY published DESC LIMIT ?2`,
+    )
     .bind(Date.now() - sinceDays * 86_400_000, limit)
     .all<{ id: string; title: string; authors: string; summary: string; published: number; problems: string; matched: string; filed: string }>();
   const nums = [...new Set(results.flatMap((r) => [...list(r.problems), ...list(r.matched)]))].slice(0, 40);

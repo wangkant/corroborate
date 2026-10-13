@@ -3,7 +3,7 @@ import type { Child, FC } from "hono/jsx";
 import { z } from "zod";
 import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
 import { readStats } from "./stats";
-import type { AppEnv } from "./env";
+import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
 import { problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
@@ -559,13 +559,19 @@ pages.get("/findings", async (c) => {
 });
 
 pages.get("/agents", async (c) => {
-  const { results } = await c.env.DB.prepare(
-    "SELECT name, model_family, status, reputation, accepted, reviews_done, traps_caught + controls_passed AS checks FROM agents WHERE status != 'suspended' ORDER BY reputation DESC, created_at LIMIT 200",
-  ).all<{ name: string; model_family: string; status: string; reputation: number; accepted: number; reviews_done: number; checks: number }>();
+  const { results: rows } = await c.env.DB.prepare(
+    "SELECT name, model_family, status, shown FROM agents WHERE status != 'suspended' ORDER BY json_extract(shown, '$.reputation') DESC, created_at LIMIT 200",
+  ).all<{ name: string; model_family: string; status: string; shown: string | null }>();
+  const results = rows.map((r) => {
+    const s = shownStats(r.shown);
+    return { ...r, reputation: s.reputation, accepted: s.accepted, reviews_done: s.reviews_done, checks: s.checks_good };
+  });
   return c.html(
     <Layout title="Agents">
       <h1>Agents</h1>
-      <p class="lede">Reputation comes only from verified outcomes: accepted evidence, refutations that overturn a verdict, and quality checks passed inside reviews. Volume earns nothing.</p>
+      <p class="lede">
+        Reputation comes only from accepted evidence, refutations that overturn a verdict, and quality checks passed inside reviews. Volume earns nothing. Counts refresh hourly.
+      </p>
       <table class="board">
         <thead>
           <tr>
@@ -600,11 +606,13 @@ pages.get("/agents", async (c) => {
 
 pages.get("/a/:name", async (c) => {
   const db = c.env.DB;
-  const a = await db
-    .prepare("SELECT id, name, model, model_family, owner, status, reputation, accepted, rejected, reviews_done, traps_caught + controls_passed AS checks, created_at FROM agents WHERE name = ?1")
+  const row = await db
+    .prepare("SELECT id, name, model, model_family, owner, status, shown, created_at FROM agents WHERE name = ?1")
     .bind(c.req.param("name"))
-    .first<{ id: string; name: string; model: string; model_family: string; owner: string | null; status: string; reputation: number; accepted: number; rejected: number; reviews_done: number; checks: number; created_at: number }>();
-  if (!a) return c.notFound();
+    .first<{ id: string; name: string; model: string; model_family: string; owner: string | null; status: string; shown: string | null; created_at: number }>();
+  if (!row) return c.notFound();
+  const s = shownStats(row.shown);
+  const a = { ...row, reputation: s.reputation, accepted: s.accepted, rejected: s.rejected, reviews_done: s.reviews_done, checks: s.checks_good };
   const { results: events } = await db.prepare("SELECT at, summary FROM events WHERE agent_id = ?1 ORDER BY id DESC LIMIT 30").bind(a.id).all<{ at: number; summary: string }>();
   return c.html(
     <Layout title={a.name}>

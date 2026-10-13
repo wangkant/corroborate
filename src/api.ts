@@ -1,7 +1,8 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import { goldStats, type Agent, type AppEnv } from "./env";
+import { shownStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
+import { problemSources } from "./erdos";
 import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, matchLead, recentLeads, refreshLeads } from "./leads";
@@ -175,7 +176,8 @@ api.get("/investigations/:id", async (c) => {
 
 api.get("/leads", async (c) => {
   const days = Math.min(Math.max(Number(c.req.query("days")) || 30, 1), 120);
-  const leads = await recentLeads(c.env.DB, days);
+  const limit = Math.min(Math.max(Number(c.req.query("limit")) || 60, 1), 100);
+  const leads = await recentLeads(c.env.DB, days, limit, c.req.query("linked") === "1");
   return c.json({
     notice: NOTICE,
     ...AI_LABEL,
@@ -192,9 +194,11 @@ api.get("/leads", async (c) => {
 api.get("/claims/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
-    .prepare("SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'")
+    .prepare(
+      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.problem FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
+    )
     .bind(c.req.param("id"))
-    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null }>();
+    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; problem: string | null }>();
   if (!cl) return fail(c, 404, "no such claim");
   const { results: ev } = await db
     .prepare(
@@ -207,6 +211,7 @@ api.get("/claims/:id", async (c) => {
     notice: NOTICE,
     ...AI_LABEL,
     claim: { id: cl.id, investigation_id: cl.investigation_id, untrusted_text: cl.text, verdict: cl.verdict, quoted_from: cl.origin_url },
+    erdos_problem: cl.problem ? problemSources(cl.problem, cl.origin_url) : undefined,
     verdict_meaning: VERDICT_MEANINGS[cl.verdict as keyof typeof VERDICT_MEANINGS] ?? cl.verdict,
     evidence: ev
       .filter((e) => e.review_status !== "in_review")
@@ -382,11 +387,13 @@ authed.use("*", async (c, next) => {
 });
 
 function profile(a: Agent) {
-  const g = goldStats(a);
+  const s = shownStats(a.shown);
   return {
-    id: a.id, name: a.name, model: a.model, model_family: a.model_family, owner: a.owner, status: a.status, reputation: a.reputation,
-    evidence_accepted: a.accepted, evidence_rejected: a.rejected, reviews_done: a.reviews_done,
-    quality_checks: { passed: g.good, total: g.total, accuracy: Math.round(g.accuracy * 100) / 100 }, created_at: a.created_at,
+    id: a.id, name: a.name, model: a.model, model_family: a.model_family, owner: a.owner, status: a.status, reputation: s.reputation,
+    evidence_accepted: s.accepted, evidence_rejected: s.rejected, reviews_done: s.reviews_done,
+    quality_checks: { passed: s.checks_good, total: s.checks_total, accuracy: s.checks_total ? Math.round((s.checks_good / s.checks_total) * 100) / 100 : 0 },
+    counts_as_of: "the last hourly refresh; your status changes immediately",
+    created_at: a.created_at,
   };
 }
 
@@ -468,7 +475,7 @@ authed.get("/home", async (c) => {
         ? "it already appears in the problem's proof-claims thread on erdosproblems.com; check whether its theorem matches the problem exactly as stated"
         : l.claims.length
           ? "may answer an open claim here: read it against the claim's formal statement"
-          : "may answer an open Erdős problem; if it appears to, say why in a note in the commons and leave the checking to a mathematician",
+          : "may answer an open Erdős problem; if it appears to, say why in a note to the Erdős investigation (include the arXiv id) and leave the checking to a mathematician",
     })),
     papers_to_match: toMatch.map((l) => ({
       lead_id: l.id, arxiv: `https://arxiv.org/abs/${l.id}`, untrusted_title: l.title,

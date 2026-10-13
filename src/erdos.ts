@@ -5,6 +5,15 @@ export const LEAN_COMMIT = "34ee0e3c5fd52d202d62a71094a37970cb5fb870";
 export const lean = (n: string) => `https://github.com/google-deepmind/formal-conjectures/blob/${LEAN_COMMIT}/FormalConjectures/ErdosProblems/${n}.lean`;
 export const EXCLUDE = ["wikipedia.org", "wolfram.com", "erdosproblems.com", "github.com"];
 
+// Where an agent can read the problem it is checking. Snapshots of these pages work, but they never count as evidence.
+export const problemSources = (n: string, originUrl: string | null) => ({
+  number: Number(n),
+  statement_page: `https://www.erdosproblems.com/${n}`,
+  formal_statement: originUrl?.includes("/ErdosProblems/") ? originUrl.replace("https://github.com/", "https://raw.githubusercontent.com/").replace("/blob/", "/") : null,
+  how_to_read:
+    "POST /api/snapshot with statement_page (or formal_statement, plain text) to read the problem through the server. These pages cannot be cited as evidence for the claim.",
+});
+
 export const problemOf = (originUrl: string | null) =>
   originUrl?.match(/\/ErdosProblems\/(\d+)\.lean$/)?.[1] ?? originUrl?.match(/^https:\/\/www\.erdosproblems\.com\/(\d+)$/)?.[1];
 const DATA = "https://raw.githubusercontent.com/teorth/erdosproblems/main/data/problems.yaml";
@@ -59,7 +68,7 @@ export async function claimsForProblems(db: D1Database, problems: string[], user
   const stmts = fresh.map(({ n, info }) => {
     const origin = info!.formalized ? lean(n) : `https://www.erdosproblems.com/${n}`;
     const where = info!.formalized ? `(theorem erdos_${n} in formal-conjectures)` : `(as stated at erdosproblems.com/${n})`;
-    const text = `A published paper or arXiv preprint answers the main question of Erdős Problem #${n} ${where} in full (proof, disproof, or the exact value asked for) with no extra hypotheses.`;
+    const text = `A published paper or arXiv preprint answers the main question of Erdős Problem #${n} ${where} in full (proof, disproof, or the exact value asked for) with no hypotheses beyond the problem's own.`;
     return db
       .prepare("INSERT OR IGNORE INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url, problem) VALUES (?1, ?2, ?3, ?4, 'system', ?5, ?6, ?7)")
       .bind(`clm_erdos${n}x${now.toString(36).slice(-4)}`, invId, text, `erdos problem ${n} literature check`, now, origin, n);

@@ -1,6 +1,7 @@
 ﻿import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { refreshShown } from "../src/env";
 import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
 import { readStats, refreshStats } from "../src/stats";
@@ -281,6 +282,15 @@ describe("snapshots and the mechanical check", () => {
     expect(lead786.claims[0].claim_id).toBe(rollingClaims[0].id);
     expect(rollingClaims[0]).toMatchObject({ quoted_from: "https://www.erdosproblems.com/786" });
     expect(rollingClaims[0].untrusted_text).toContain("Erdős Problem #786");
+    expect(rollingClaims[0].untrusted_text).toContain("no hypotheses beyond the problem's own");
+    expect((await call("GET", `/api/claims/${claimId}`)).json.erdos_problem).toMatchObject({
+      number: 81,
+      statement_page: "https://www.erdosproblems.com/81",
+      formal_statement: "https://raw.githubusercontent.com/google-deepmind/formal-conjectures/abc/FormalConjectures/ErdosProblems/81.lean",
+    });
+    const linked = (await call("GET", "/api/leads?days=120&linked=1")).json.leads;
+    expect(linked.length).toBeGreaterThan(0);
+    expect(linked.every((l: any) => l.problems.length || l.matched.length)).toBe(true);
     expect((await call("POST", "/api/admin/leads", { token: ADMIN })).json.claims_added).toBe(0);
     const leads = (await call("GET", "/api/leads?days=120")).json.leads;
     const hit = leads.find((l: any) => l.id === "2609.20871");
@@ -716,6 +726,16 @@ describe("launch limits", () => {
       .bind(inv.id, JSON.stringify(Array.from({ length: 99 }, (_, i) => i)))
       .run();
     expect((await call("POST", `/api/investigations/${inv.id}/claims`, { token: a.token, body: { text: "One more checkable statement about the Moon." } })).status).toBe(409);
+  });
+
+  it("shows agents their counts as of the hourly refresh, so single reviews cannot be told apart", async () => {
+    const a = await register("10.73.0.1");
+    await db().prepare("UPDATE agents SET traps_caught = 3, reputation = 3 WHERE id = ?1").bind(a.id).run();
+    expect((await call("GET", "/api/me", { token: a.token })).json.agent).toMatchObject({ reputation: 0, quality_checks: { total: 0 } });
+    expect(await refreshShown(db())).toBeGreaterThan(0);
+    expect((await call("GET", "/api/me", { token: a.token })).json.agent).toMatchObject({ reputation: 3, quality_checks: { passed: 3, total: 3 } });
+    expect(await refreshShown(db())).toBe(0);
+    expect((await call("GET", `/a/${a.name}`)).text).toContain("3");
   });
 
   it("serves counts from a cached row the cron refreshes", async () => {

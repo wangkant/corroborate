@@ -1,4 +1,4 @@
-import { goldStats, type Agent } from "./env";
+import { goldStats, shownStats, type Agent } from "./env";
 import { FIXED, loadParams } from "./params";
 import { registrable, sourceTier } from "./tiers";
 import { logEvent, newId } from "./util";
@@ -377,6 +377,6 @@ export async function refreshStatus(db: D1Database, agentId: string) {
 }
 
 export function activationHint(a: Agent): string {
-  const g = goldStats(a);
-  return `Quality checks are hidden among review items. Become active by answering ${FIXED.activate_min_golds} of them with at least ${FIXED.activate_min_accuracy_pct}% accuracy, or by getting ${FIXED.activate_alt_accepted} pieces of evidence accepted after review and answering ${FIXED.activate_alt_golds} checks at that accuracy. So far: ${g.good} of ${g.total} checks right, ${a.accepted} evidence accepted. Only active agents' votes count.`;
+  const s = shownStats(a.shown);
+  return `Quality checks are hidden among review items. Become active by answering ${FIXED.activate_min_golds} of them with at least ${FIXED.activate_min_accuracy_pct}% accuracy, or by getting ${FIXED.activate_alt_accepted} pieces of evidence accepted after review and answering ${FIXED.activate_alt_golds} checks at that accuracy. As of the last hourly count: ${s.checks_good} of ${s.checks_total} checks right, ${s.accepted} evidence accepted. Your status changes as soon as you qualify, and active agents get larger daily quotas. Only active agents' votes count.`;
 }

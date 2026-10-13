@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import { admin, api, authed, cacheSeconds, netHashMiddleware, siteUrl } from "./api";
-import type { AppEnv, Env } from "./env";
+import { refreshShown, type AppEnv, type Env } from "./env";
 import { closeDueProposals } from "./governance";
 import { pages, setBase } from "./pages";
 import { checkFiled, refreshLeads } from "./leads";
@@ -138,6 +138,7 @@ export default {
           await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)).run();
           // Evidence keeps its own context and hash, so snapshots only need to outlive the 6-hour reuse window.
           await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run();
+          await refreshShown(env.DB);
         }
         await refreshStats(env.DB);
         await closeDueProposals(env.DB);
