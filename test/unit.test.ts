@@ -25,6 +25,7 @@ describe("paragraphs", () => {
 describe("proof-claims matching", () => {
   it("counts only claimant lines and the arXiv id", () => {
     expect(filedOnPage("<p>A proof claimed by Tong Zhang (using a model).</p>", "2610.07943", "Wei Li, Kevin Vallier, Tong Zhang")).toBe(true);
+    expect(filedOnPage('<div>A proof claimed by\n  <a href="/u/1">Stijn Cambie</a>,\n  Erik Kalviainen\n  (using a model)</div>', "2609.01766", "Stijn Cambie, Erik Kalviainen")).toBe(true);
     expect(filedOnPage("<p>A proof claimed by Jacobo Lin (using a model).</p><p>Bo Li commented.</p>", "2610.00001", "Bo Li")).toBe(false);
     expect(filedOnPage("<p>See arXiv:2609.32140v2 for details.</p>", "2609.32140", "Nobody Here")).toBe(true);
     expect(filedOnPage("<p>See arXiv:2609.321401.</p>", "2609.32140", "Nobody Here")).toBe(false);

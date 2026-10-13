@@ -79,7 +79,8 @@ const CLAIMANT = /A proof claimed by\s+(.{2,300}?)\s*(?:\(using|Summary:|\|)/g;
 
 // Only the claimant line of a proof claim counts: a name elsewhere on the page (comments, references) is not a filing.
 export function filedOnPage(html: string, arxivId: string, authors: string): boolean {
-  const text = decodeEntities(html.slice(0, 400_000).replace(/<[^>]+>/g, " "));
+  // Real pages break lines inside the claimant line, so whitespace is collapsed before matching.
+  const text = decodeEntities(html.slice(0, 400_000).replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
   if (new RegExp(`(?<![\\d.])${arxivId.replace(".", "\\.")}(?!\\d)`).test(text)) return true;
   const claimants = new Set([...text.matchAll(CLAIMANT)].flatMap((m) => m[1]!.split(/,|\band\b|&/).map((n) => fold(n.trim()))));
   return authors.split(",").map((a) => fold(a.trim())).some((a) => a.includes(" ") && claimants.has(a));
