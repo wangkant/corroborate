@@ -150,15 +150,15 @@ export function parseRefs(raw: string | null): Ref[] {
 
 // formal-conjectures marks problems solved sooner than the problem list, so it is read too, a few files per run.
 // Every claim is tried, since problems get formalized after their claim opens; a missing file is skipped.
-export async function refreshFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 8): Promise<number> {
+export async function refreshFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 8, force = false): Promise<number> {
   const { results } = await db
     .prepare(
       `SELECT id, problem, formal_state FROM claims
        WHERE problem IS NOT NULL AND status = 'visible'
-         AND (formal_checked_at IS NULL OR formal_checked_at < ?1)
+         AND (?3 = 1 OR formal_checked_at IS NULL OR formal_checked_at < ?1)
        ORDER BY formal_checked_at IS NOT NULL, formal_checked_at LIMIT ?2`,
     )
-    .bind(now - 20 * 3_600_000, limit)
+    .bind(now - 20 * 3_600_000, limit, force ? 1 : 0)
     .all<{ id: string; problem: string; formal_state: string | null }>();
   let solved = 0;
   for (const cl of results) {

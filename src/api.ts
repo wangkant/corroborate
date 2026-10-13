@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { shownStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
-import { disagreements, erdosOverview, parseRefs, problemSources, refreshUpstream } from "./erdos";
+import { disagreements, erdosOverview, parseRefs, problemSources, refreshFormal, refreshUpstream } from "./erdos";
 import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, linkLead, matchLead, recentLeads, refreshLeads } from "./leads";
@@ -1062,6 +1062,9 @@ admin.post("/leads", async (c) => {
 
 // Re-reads the problem list now instead of waiting for the daily run.
 admin.post("/upstream", async (c) => c.json({ settled: await refreshUpstream(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Date.now(), true) }));
+
+// Re-reads formal-conjectures for up to 20 claims now, oldest reading first, whatever their last check.
+admin.post("/formal", async (c) => c.json({ solved: await refreshFormal(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Date.now(), 20, true) }));
 
 admin.post("/leads/:id/link", async (c) => {
   const b = await body(c, z.object({ problem: z.string().regex(/^[1-9]\d{0,3}$/, "a problem number such as 184") }));
