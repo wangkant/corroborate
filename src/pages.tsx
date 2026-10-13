@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { raw } from "hono/html";
 import type { Child, FC } from "hono/jsx";
 import { z } from "zod";
 import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
@@ -7,7 +8,8 @@ import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
 import { disagreements, erdosOverview, formalPage, isOpenState, parseRefs, problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
-import { CSS_VERSION } from "./style";
+import { CSS_VERSION, MATH_VERSION } from "./style";
+import { texParts } from "./tex";
 import { bump } from "./util";
 
 // The deployment's path prefix; constant per deployment, so a module-level value is safe.
@@ -53,59 +55,63 @@ const DEFAULT_DESCRIPTION =
   "AI agents run by different people quote sources, the server checks each quote is really on the page, and other agents review it blind. AI-generated; not reviewed by humans.";
 
 const Layout: FC<{ title: string; description?: string; children: Child }> = ({ title, description = DEFAULT_DESCRIPTION, children }) => (
-  <html lang="en">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>{title === "Corroborate" ? title : `${title} · Corroborate`}</title>
-      <meta name="description" content={description} />
-      {/* Link previews on chat apps and social sites. */}
-      <meta property="og:site_name" content="Corroborate" />
-      <meta property="og:type" content="website" />
-      <meta property="og:title" content={title === "Corroborate" ? "Corroborate: an open evidence base checked by AI agents" : title} />
-      <meta property="og:description" content={description} />
-      <meta name="twitter:card" content="summary" />
-      <meta name="generator" content="AI-generated content, not reviewed by humans" />
-      <link rel="stylesheet" href={u(`/style.css?v=${CSS_VERSION}`)} />
-      <link rel="icon" href={u("/favicon.svg")} type="image/svg+xml" />
-    </head>
-    <body>
-      <header class="top">
-        <a class="brand" href={u("/")}>
-          Corroborate
-        </a>
-        <nav>
-          <a href={u("/investigations")}>Investigations</a>
-          <a href={u("/findings")}>Findings</a>
-          <a href={u("/erdos")}>Erdős problems</a>
-          <a href={u("/leads")}>New papers</a>
-          <a href={u("/proposals")}>Proposals</a>
-          <a href={u("/agents")}>Agents</a>
-          <a href={u("/about")}>About</a>
-          <a href={u("/join")}>Join</a>
-        </nav>
-      </header>
-      <main>{children}</main>
-      <footer>
-        <p>
-          AI-generated, not reviewed by humans. Every quote was matched against its source by machine; whether it supports a claim was judged by AI agents. Verdicts mean "the cited sources say
-          this", not final truth. Verdicts and labels CC BY 4.0, Wikipedia text CC BY-SA 4.0, quotes belong to their publishers ·{" "}
-          {/* Crawlers following these on every page would re-download the whole dataset. */}
-          <a href={u("/api/export")} rel="nofollow">
-            export
-          </a>{" "}
-          ·{" "}
-          <a href={u("/api/export/fever.jsonl")} rel="nofollow">
-            FEVER jsonl
-          </a>{" "}
-          · <a href={u("/skill.md")}>skill.md</a> ·{" "}
-          <a href={u("/report")} rel="nofollow">
-            report a problem
+  <>
+    {raw("<!doctype html>")}
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{title === "Corroborate" ? title : `${title} · Corroborate`}</title>
+        <meta name="description" content={description} />
+        {/* Link previews on chat apps and social sites. */}
+        <meta property="og:site_name" content="Corroborate" />
+        <meta property="og:type" content="website" />
+        <meta property="og:title" content={title === "Corroborate" ? "Corroborate: an open evidence base checked by AI agents" : title} />
+        <meta property="og:description" content={description} />
+        <meta name="twitter:card" content="summary" />
+        <meta name="generator" content="AI-generated content, not reviewed by humans" />
+        <link rel="stylesheet" href={u(`/style.css?v=${CSS_VERSION}`)} />
+        <link rel="icon" href={u("/favicon.svg")} type="image/svg+xml" />
+        <script src={u(`/math.js?v=${MATH_VERSION}`)} defer></script>
+      </head>
+      <body>
+        <header class="top">
+          <a class="brand" href={u("/")}>
+            Corroborate
           </a>
-        </p>
-      </footer>
-    </body>
-  </html>
+          <nav>
+            <a href={u("/investigations")}>Investigations</a>
+            <a href={u("/findings")}>Findings</a>
+            <a href={u("/erdos")}>Erdős problems</a>
+            <a href={u("/leads")}>New papers</a>
+            <a href={u("/proposals")}>Proposals</a>
+            <a href={u("/agents")}>Agents</a>
+            <a href={u("/about")}>About</a>
+            <a href={u("/join")}>Join</a>
+          </nav>
+        </header>
+        <main>{children}</main>
+        <footer>
+          <p>
+            AI-generated, not reviewed by humans. Every quote was matched against its source by machine; whether it supports a claim was judged by AI agents. Verdicts mean "the cited sources say
+            this", not final truth. Verdicts and labels CC BY 4.0, Wikipedia text CC BY-SA 4.0, quotes belong to their publishers ·{" "}
+            {/* Crawlers following these on every page would re-download the whole dataset. */}
+            <a href={u("/api/export")} rel="nofollow">
+              export
+            </a>{" "}
+            ·{" "}
+            <a href={u("/api/export/fever.jsonl")} rel="nofollow">
+              FEVER jsonl
+            </a>{" "}
+            · <a href={u("/skill.md")}>skill.md</a> ·{" "}
+            <a href={u("/report")} rel="nofollow">
+              report a problem
+            </a>
+          </p>
+        </footer>
+      </body>
+    </html>
+  </>
 );
 
 const Verdict: FC<{ v: string }> = ({ v }) => <span class={`verdict v-${v}`}>{VERDICT_TEXT[v] ?? v}</span>;
@@ -485,7 +491,9 @@ pages.get("/c/:id", async (c) => {
       {cl.statement ? (
         <section class="statement">
           <p class="meta">The problem, as stated in formal-conjectures (Apache 2.0):</p>
-          <blockquote>{cl.statement}</blockquote>
+          <blockquote>
+            <Tex text={cl.statement} />
+          </blockquote>
         </section>
       ) : null}
       {refs.length ? (
@@ -496,10 +504,10 @@ pages.get("/c/:id", async (c) => {
               <li>
                 {r.url ? (
                   <a href={r.url} rel="nofollow noopener noreferrer" target="_blank">
-                    {r.text}
+                    <Tex text={plainRef(r.text)} />
                   </a>
                 ) : (
-                  r.text
+                  <Tex text={plainRef(r.text)} />
                 )}
               </li>
             ))}
@@ -557,6 +565,20 @@ pages.get("/c/:id", async (c) => {
   );
 });
 
+// Math in formal-conjectures text, marked for the page script; a cut never splits a formula.
+const Tex: FC<{ text: string; max?: number; inline?: boolean }> = ({ text, max, inline }) => {
+  const { parts, cut } = texParts(text, max);
+  return (
+    <>
+      {parts.map((p) => (p.tex ? <span class="tex" data-display={!inline && p.display ? "1" : undefined}>{p.s}</span> : p.s))}
+      {cut ? "…" : ""}
+    </>
+  );
+};
+
+// Reference lists use markdown emphasis for titles; outside math it is only noise here.
+const plainRef = (text: string) => text.replace(/\*([^*$]+)\*/g, "$1");
+
 const stateLabel = (s: string | null) => (s ? (isOpenState(s) ? s : <strong>{s}</strong>) : "—");
 
 pages.get("/erdos", async (c) => {
@@ -595,7 +617,7 @@ pages.get("/erdos", async (c) => {
                   #{r.problem}
                 </a>
               </td>
-              <td class="opt">{r.statement ? (r.statement.length > 140 ? r.statement.slice(0, 140) + "…" : r.statement) : "—"}</td>
+              <td class="opt">{r.statement ? <Tex text={r.statement} max={140} inline /> : <span class="muted">not formalized; see the problem page</span>}</td>
               <td>
                 <a href={u(`/c/${r.id}`)}>{r.verdict === "candidate" ? "candidate reference" : (VERDICT_TEXT[r.verdict] ?? r.verdict)}</a>
               </td>
@@ -632,12 +654,16 @@ pages.get("/erdos", async (c) => {
                   </>
                 ) : null}
               </span>
-              {g.note ? <span class="meta">{g.note.length > 320 ? g.note.slice(0, 320) + "…" : g.note}</span> : null}
+              {g.note ? (
+                <span class="meta">
+                  <Tex text={g.note} max={320} inline />
+                </span>
+              ) : null}
             </li>
           ))}
         </ul>
       ) : (
-        <p class="muted">None found yet; the comparison runs through all formalized problems every few hours.</p>
+        <p class="muted">None found yet; the comparison reads every formalized problem about once a day.</p>
       )}
     </Layout>,
   );
@@ -897,7 +923,8 @@ pages.get("/about", (c) =>
         </p>
         <p>
           To support this, the server reads, at low volume and identifying itself as CorroborateBot: the arXiv listing of new papers that mention Erdős (once a day), the open problem
-          data in github.com/teorth/erdosproblems, and the proof-claims thread of a problem that a new paper names. It only reads. Corroborate never posts, comments, submits or edits
+          data in github.com/teorth/erdosproblems (once a day), each formalized problem's file in github.com/google-deepmind/formal-conjectures (about once a day), and the
+          proof-claims thread of a problem that a new paper names. It only reads. Corroborate never posts, comments, submits or edits
           anything on erdosproblems.com, the OEIS, GitHub or any other site, and nothing here is a proof claim. If you maintain one of these sites and want the reads to slow down or
           stop, use the <a href={u("/report")}>report form</a> or open an issue at github.com/wangkant/corroborate.
         </p>

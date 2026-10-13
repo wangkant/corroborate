@@ -416,7 +416,8 @@ describe("snapshots and the mechanical check", () => {
     expect(await scanFormal(db(), "test-ua", Date.now())).toBe(0);
     expect((await call("GET", "/api/erdos")).json.disagreements).toEqual([]);
     cat184 = "solved";
-    expect(await scanFormal(db(), "test-ua", Date.now() + 1000)).toBe(1);
+    expect(await scanFormal(db(), "test-ua", Date.now() + 1000)).toBe(0);
+    expect(await scanFormal(db(), "test-ua", Date.now() + 21 * 3_600_000)).toBe(1);
     spy.mockImplementation(orig);
     const gaps = (await call("GET", "/api/erdos")).json.disagreements;
     expect(gaps).toMatchObject([{ problem: 184, list_state: "open", formal_conjectures_note: expect.stringContaining("proved by a model"), claim_id: expect.stringMatching(/^clm_erdos184/) }]);
@@ -942,7 +943,8 @@ describe("hardening", () => {
     expect(page.text).not.toContain("<img src=x");
     expect(page.text).toContain("&lt;script&gt;");
     const csp = page.headers.get("content-security-policy") ?? "";
-    expect(csp).toContain("script-src 'none'");
+    // Only the site's own files run; no inline script, so injected markup stays inert.
+    expect(csp).toMatch(/script-src 'self'(;|$)/);
     expect(csp).toContain("frame-ancestors 'none'");
   });
 

@@ -3,6 +3,7 @@ import { checkUrl, decodeEntities, findQuote, htmlToText, paragraphs } from "../
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
 import { parseRefs, readLean, readRefs } from "../src/erdos";
 import { filedOnPage, parseFeed, problemNumbers } from "../src/leads";
+import { texParts } from "../src/tex";
 import { cacheKey, dailyLimitHit, secondsToMidnightUtc } from "../src/util";
 
 describe("formal-conjectures files", () => {
@@ -21,6 +22,25 @@ describe("formal-conjectures references", () => {
     expect(refs[1]!.text).toContain("arXiv:2609.25107 (2026)");
     expect(parseRefs(JSON.stringify([{ text: "x", url: "javascript:alert(1)" }]))).toEqual([{ text: "x", url: null }]);
     expect(parseRefs("not json")).toEqual([]);
+  });
+});
+
+describe("math in statements", () => {
+  const show = (t: string, max?: number) => {
+    const { parts, cut } = texParts(t, max);
+    return parts.map((p) => (p.tex ? (p.display ? `[[${p.s}]]` : `[${p.s}]`) : p.s)).join("") + (cut ? "…" : "");
+  };
+  it("marks inline and display math, keeps prize amounts and escaped dollars as text", () => {
+    expect(show("For $0 \\leq m < n$ is $A$ complete?")).toBe("For [0 \\leq m < n] is [A] complete?");
+    expect(show("$$R(C_4,K_n) \\ll n^{2-c}.$$ The prize of $100 is offered in [Er78] for a proof.")).toBe("[[R(C_4,K_n) \\ll n^{2-c}.]] The prize of $100 is offered in [Er78] for a proof.");
+    expect(show("A $500 prize, and $\\tau(n)$ counts divisors.")).toBe("A $500 prize, and [\\tau(n)] counts divisors.");
+    expect(show("Costs \\$5 and $x$.")).toBe("Costs $5 and [x].");
+    expect(show("Then $x > 0 \\text{ for all } n$.")).toBe("Then [x > 0 \\text{ for all } n].");
+  });
+  it("cuts before a formula rather than through it", () => {
+    expect(show("Let $\\sum_{n \\in A}\\frac 1 n = \\infty$ hold.", 10)).toBe("Let…");
+    expect(show("Short $x$ text here", 100)).toBe("Short [x] text here");
+    expect(show("one two three four five six", 12)).toBe("one two…");
   });
 });
 

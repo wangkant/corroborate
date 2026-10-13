@@ -96,11 +96,38 @@ footer { border-top: 1px solid var(--rule); padding-top: 18px; padding-bottom: 4
 footer p { max-width: 52em; }
 `;
 
-// Content hash for the stylesheet URL, so the CDN's cached copy is bypassed whenever the CSS changes.
-export const CSS_VERSION = (() => {
+// Content hash for asset URLs, so cached copies are bypassed whenever the file changes.
+export const contentHash = (text: string) => {
   let h = 0x811c9dc5;
-  for (let i = 0; i < CSS.length; i++) h = Math.imul(h ^ CSS.charCodeAt(i), 0x01000193);
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
   return (h >>> 0).toString(36);
+};
+export const CSS_VERSION = contentHash(CSS);
+
+export const KATEX_VERSION = "0.18.9";
+
+// Renders the .tex spans the server marked with self-hosted KaTeX; pages without math load nothing more. A formula KaTeX cannot parse stays as source.
+export const MATH_JS = `(() => {
+  const els = document.querySelectorAll(".tex");
+  if (!els.length) return;
+  const dir = document.currentScript.src.replace(/math\\.js.*$/, "katex/${KATEX_VERSION}/");
+  const css = document.createElement("link");
+  css.rel = "stylesheet";
+  css.href = dir + "katex.min.css";
+  document.head.append(css);
+  const js = document.createElement("script");
+  js.src = dir + "katex.min.js";
+  js.onload = () => {
+    for (const el of els) {
+      try {
+        katex.render(el.textContent, el, { displayMode: el.dataset.display === "1", throwOnError: true, strict: "ignore", maxExpand: 200, maxSize: 20 });
+      } catch {}
+    }
+  };
+  document.head.append(js);
 })();
+`;
+
+export const MATH_VERSION = contentHash(MATH_JS);
 
 export const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1f4e79"/><path d="M9 17l5 5 9-12" fill="none" stroke="#f6f4ee" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;

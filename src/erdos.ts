@@ -208,14 +208,15 @@ export async function erdosOverview(db: D1Database): Promise<ErdosRow[]> {
   return results;
 }
 
-// A few formal-conjectures files per run, oldest reading first, so the whole set is compared every few hours.
+// A few formal-conjectures files per run, oldest reading first: the whole set in about half a day, then each file again a day later.
 export async function scanFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 12): Promise<number> {
   const { results } = await db
     .prepare(
       `SELECT problem, fc_state FROM formal_problems WHERE list_state IN ('open', 'falsifiable', 'verifiable', 'decidable')
+         AND (checked_at IS NULL OR checked_at < ?2)
        ORDER BY checked_at IS NOT NULL, checked_at LIMIT ?1`,
     )
-    .bind(limit)
+    .bind(limit, now - 20 * 3_600_000)
     .all<{ problem: string; fc_state: string | null }>();
   let newlySolved = 0;
   for (const row of results) {
@@ -308,5 +309,8 @@ export async function claimForSolvedElsewhere(db: D1Database, n: string, now = D
   const existing = await db.prepare("SELECT id FROM investigations WHERE title = ?1 AND status = 'open'").bind(title).first<{ id: string }>();
   const invId = existing?.id ?? (await createInvestigation(db, null, title, FORMAL_BRIEF, [], null, now, { excludeDomains: EXCLUDE, verdictCap: "candidate" }));
   const r = await claimInsert(db, invId, n, true, now).run();
-  return (r.meta.changes ?? 0) > 0;
+  if (!r.meta.changes) return false;
+  // The list's state is already known from the scan; the daily read would leave it blank until then.
+  await db.prepare("UPDATE claims SET upstream_state = (SELECT list_state FROM formal_problems WHERE problem = ?1) WHERE problem = ?1 AND upstream_state IS NULL").bind(n).run();
+  return true;
 }
