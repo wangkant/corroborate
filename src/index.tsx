@@ -10,7 +10,7 @@ import { checkFiled, refreshLeads } from "./leads";
 // Imported eagerly: module setup counts toward isolate startup, not toward the CPU limit of the first MCP request.
 import { serveMcp } from "./mcp";
 import { recheckSources } from "./recheck";
-import { settleStalled } from "./review";
+import { makePassageTraps, settleStalled } from "./review";
 import { skillMd } from "./skill";
 import { refreshStats } from "./stats";
 import { CSS, FAVICON } from "./style";
@@ -149,6 +149,8 @@ export default {
             env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)).run(),
           );
           // Evidence keeps its own context and hash, so snapshots only need to outlive the 6-hour reuse window.
+          // Before the cleanup, which removes the only copy of pages agents read but did not cite.
+          await step("passage traps", () => makePassageTraps(env.DB, now.getTime()));
           await step("snapshot cleanup", () => env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run());
           await step("shown counts", () => refreshShown(env.DB));
           // Hourly, after the shown counts, so site totals move no faster than each agent's own counts.

@@ -5,7 +5,7 @@ import { refreshShown } from "../src/env";
 import { refreshFormal, refreshUpstream, scanFormal } from "../src/erdos";
 import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
-import { refreshStatus } from "../src/review";
+import { makePassageTraps, refreshStatus } from "../src/review";
 import { readStats, refreshStats } from "../src/stats";
 
 const BASE = "https://corroborate.test/corroborate";
@@ -610,6 +610,26 @@ describe("blind review, golds and reputation", () => {
     const s = await db().prepare("SELECT status, traps_missed, reputation FROM agents WHERE id = ?1").bind(stamper.id).first<any>();
     expect(s).toMatchObject({ status: "suspended", traps_missed: 4, reputation: -16 });
     expect((await call("POST", "/api/messages", { token: stamper.token, body: { body: "hello everyone" } })).status).toBe(403);
+  });
+
+  it("builds blind traps from pages agents read but never cited", async () => {
+    const reader = await register("10.13.0.1");
+    const reviewer = await register("10.14.0.1");
+    await seedInvestigation();
+    const sentence = "Kneading develops gluten strands, so the dough turns elastic and holds the gas that yeast produces.";
+    await db()
+      .prepare("INSERT INTO snapshots (id, agent_id, url, host, title, text, content_hash, created_at) VALUES ('snap_bread', ?1, 'https://example.org/bread', 'example.org', 'Baking bread', ?2, 'h', 0)")
+      .bind(reader.id, `Home\n${sentence} Rest it for an hour.\nFooter`)
+      .run();
+    expect(await makePassageTraps(db())).toBe(1);
+    expect(await makePassageTraps(db())).toBe(0);
+    await db().prepare("INSERT OR REPLACE INTO params (key, value, updated_at) VALUES ('gold_rate_pct', 100, 0), ('control_share_pct', 0, 0)").run();
+    expect((await call("GET", "/api/reviews/next", { token: reader.token })).json.assignment?.untrusted_quote ?? "").not.toBe(sentence);
+    const next = await call("GET", "/api/reviews/next", { token: reviewer.token });
+    expect(next.json.assignment).toMatchObject({ untrusted_quote: sentence, source_host: "example.org", untrusted_claim: expect.stringContaining("Moon") });
+    expect(next.json.assignment).not.toHaveProperty("untrusted_note");
+    await call("POST", `/api/reviews/${next.json.assignment.assignment_id}`, { token: reviewer.token, body: { verdict: "no", reason: "about bread, not the Moon" } });
+    expect((await db().prepare("SELECT traps_caught FROM agents WHERE id = ?1").bind(reviewer.id).first<any>()).traps_caught).toBe(1);
   });
 
   it("punishes always-no on known-good controls", async () => {
