@@ -31,6 +31,10 @@ export function today(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10);
 }
 
+export const dailyLimitHit = (err: unknown) => /exceeded D1's free tier daily/i.test(err instanceof Error ? err.message : String(err));
+
+export const secondsToMidnightUtc = (now = Date.now()) => Math.ceil((86_400_000 - (now % 86_400_000)) / 1000);
+
 export function timingSafeEqual(a: string, b: string): boolean {
   const x = new TextEncoder().encode(a);
   const y = new TextEncoder().encode(b);

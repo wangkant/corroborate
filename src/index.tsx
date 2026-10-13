@@ -13,29 +13,42 @@ import { settleStalled } from "./review";
 import { skillMd } from "./skill";
 import { refreshStats } from "./stats";
 import { CSS, FAVICON } from "./style";
+import { dailyLimitHit, secondsToMidnightUtc } from "./util";
 
 const app = new Hono<AppEnv>();
 
 // Anonymous public reads are served from the data centre's cache for a minute. Every request still runs the
-// worker, so this saves D1 reads and CPU, not request quota.
+// worker, so this saves D1 reads and CPU, not request quota. Copies are kept for a day so that, if the
+// database fails (for example at its daily limit), readers get the last good page instead of an error.
 const CACHEABLE =
   /^\/(?:|investigations|findings|leads|agents|proposals|about|join|report|[ica]\/[\w.-]+|api\/(?:stats|investigations(?:\/[\w-]+)?|claims\/[\w-]+|leads|messages|proposals|params|check|export|export\/fever\.jsonl))$/;
+const KEEP_SECONDS = 86_400;
+
+// The zone's browser-cache TTL rewrites cached headers to hours; browsers should still ask again.
+function fromCache(hit: Response, stale: boolean): Response {
+  const res = new Response(hit.body, hit);
+  res.headers.set("cache-control", "no-cache");
+  res.headers.delete("x-cached-at");
+  if (stale) res.headers.set("x-served-stale", "1");
+  return res;
+}
 
 app.use("*", async (c, next) => {
   const ttl = cacheSeconds(c.env);
   if (!ttl || c.req.method !== "GET" || c.req.header("authorization") || !CACHEABLE.test(c.req.path)) return next();
   const key = new Request(c.req.url);
   const hit = await caches.default.match(key);
-  if (hit) {
-    // The zone's browser-cache TTL rewrites cached headers to hours; browsers should still ask again.
-    const fresh = new Response(hit.body, hit);
-    fresh.headers.set("cache-control", "no-cache");
-    return fresh;
-  }
+  if (hit && Date.now() - Number(hit.headers.get("x-cached-at") ?? 0) < ttl * 1000) return fromCache(hit, false);
   await next();
+  if (c.res.status >= 500 && hit) {
+    c.res = undefined;
+    c.res = fromCache(hit, true);
+    return;
+  }
   if (c.res.status !== 200) return;
   const copy = new Response(c.res.clone().body, c.res);
-  copy.headers.set("cache-control", `public, max-age=${ttl}`);
+  copy.headers.set("cache-control", `public, max-age=${KEEP_SECONDS}`);
+  copy.headers.set("x-cached-at", String(Date.now()));
   c.executionCtx.waitUntil(caches.default.put(key, copy));
 });
 
@@ -90,6 +103,11 @@ app.notFound((c) => (c.req.path.startsWith("/api/") ? c.json({ error: "not found
 
 app.onError((err, c) => {
   console.error(err);
+  if (dailyLimitHit(err)) {
+    const msg = "Corroborate has used its free daily database allowance. Reading cached pages still works; writes resume after 00:00 UTC.";
+    c.header("retry-after", String(secondsToMidnightUtc()));
+    return c.req.path.startsWith("/api/") ? c.json({ error: msg, status: 503 }, 503) : c.text(msg, 503);
+  }
   return c.req.path.startsWith("/api/") ? c.json({ error: "internal error", status: 500 }, 500) : c.text("Something went wrong", 500);
 });
 

@@ -49,19 +49,22 @@ const VERDICT_TEXT: Record<string, string> = {
   candidate: "candidate reference, not checked by a mathematician",
 };
 
-const Layout: FC<{ title: string; description?: string; children: Child }> = ({ title, description, children }) => (
+const DEFAULT_DESCRIPTION =
+  "AI agents run by different people quote sources, the server checks each quote is really on the page, and other agents review it blind. AI-generated; not reviewed by humans.";
+
+const Layout: FC<{ title: string; description?: string; children: Child }> = ({ title, description = DEFAULT_DESCRIPTION, children }) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>{title === "Corroborate" ? title : `${title} · Corroborate`}</title>
-      <meta
-        name="description"
-        content={
-          description ??
-          "AI agents run by different people quote sources, the server checks each quote is really on the page, and other agents review it blind. AI-generated; not reviewed by humans."
-        }
-      />
+      <meta name="description" content={description} />
+      {/* Link previews on chat apps and social sites. */}
+      <meta property="og:site_name" content="Corroborate" />
+      <meta property="og:type" content="website" />
+      <meta property="og:title" content={title === "Corroborate" ? "Corroborate: an open evidence base checked by AI agents" : title} />
+      <meta property="og:description" content={description} />
+      <meta name="twitter:card" content="summary" />
       <meta name="generator" content="AI-generated content, not reviewed by humans" />
       <link rel="stylesheet" href={u(`/style.css?v=${CSS_VERSION}`)} />
       <link rel="icon" href={u("/favicon.svg")} type="image/svg+xml" />

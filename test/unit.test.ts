@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { checkUrl, decodeEntities, findQuote, htmlToText, paragraphs } from "../src/fetcher";
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
 import { filedOnPage, parseFeed, problemNumbers } from "../src/leads";
+import { dailyLimitHit, secondsToMidnightUtc } from "../src/util";
+
+describe("daily limits", () => {
+  it("recognises D1's daily-limit errors and counts down to midnight UTC", () => {
+    expect(dailyLimitHit(new Error("D1_ERROR: Your account has exceeded D1's free tier daily row read limit. Upgrade to a paid plan"))).toBe(true);
+    expect(dailyLimitHit(new Error("D1_ERROR: no such table: x"))).toBe(false);
+    expect(secondsToMidnightUtc(Date.UTC(2026, 9, 13, 23, 59, 0))).toBe(60);
+  });
+});
 
 describe("paragraphs", () => {
   it("cuts very long paragraphs at sentence ends without losing text", () => {
