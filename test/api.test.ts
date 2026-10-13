@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { refreshShown } from "../src/env";
-import { refreshUpstream } from "../src/erdos";
+import { refreshFormal, refreshUpstream } from "../src/erdos";
 import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
 import { readStats, refreshStats } from "../src/stats";
@@ -353,6 +353,38 @@ describe("snapshots and the mechanical check", () => {
     spy.mockImplementation(orig);
     expect((await db().prepare("SELECT summary FROM events WHERE kind = 'upstream'").first<any>()).summary).toMatch(/problem #786 as disproved/);
     expect((await call("GET", `/c/${claimId}`)).text).toContain("now lists");
+  });
+
+  it("reads formal-conjectures for the problem statement and notices when a problem is marked solved", async () => {
+    const r = await call("POST", "/api/admin/investigations", {
+      token: ADMIN,
+      body: {
+        title: "Erdős problems: literature check, formal test",
+        brief: "Literature check pilot for the formal test.",
+        claims: [{ text: "A published paper answers the main question of Erdős Problem #81 in full.", origin_url: "https://github.com/google-deepmind/formal-conjectures/blob/abc/FormalConjectures/ErdosProblems/81.lean" }],
+        verdict_cap: "candidate",
+      },
+    });
+    const claimId = (await call("GET", `/api/investigations/${r.json.investigation_id}`)).json.claims[0].id;
+    let category = "open";
+    const spy = vi.mocked(globalThis.fetch);
+    const orig = spy.getMockImplementation()!;
+    spy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/main/FormalConjectures/ErdosProblems/81.lean"))
+        return new Response(`/--\nLet $G$ be a chordal graph on $n$ vertices. Can the edges be partitioned into few cliques?\n-/\n@[category research ${category}]\ntheorem erdos_81 : True := sorry\n`);
+      return orig(input, init);
+    });
+    expect(await refreshFormal(db(), "test-ua", Date.now())).toBe(0);
+    const api = (await call("GET", `/api/claims/${claimId}`)).json.erdos_problem;
+    expect(api).toMatchObject({ formal_conjectures_state: "open", untrusted_statement: expect.stringContaining("chordal graph") });
+    expect((await call("GET", `/c/${claimId}`)).text).toContain("as stated in formal-conjectures");
+    category = "solved";
+    expect(await refreshFormal(db(), "test-ua", Date.now())).toBe(0);
+    expect(await refreshFormal(db(), "test-ua", Date.now() + 21 * 3_600_000)).toBe(1);
+    spy.mockImplementation(orig);
+    expect((await db().prepare("SELECT summary FROM events WHERE kind = 'upstream'").first<any>()).summary).toMatch(/formal-conjectures now marks Erdős problem #81 as solved/);
+    expect((await call("GET", `/c/${claimId}`)).text).toContain("marks problem #81 as solved");
   });
 
   it("lets the operator link a paper it has read, and says so in public", async () => {

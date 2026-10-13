@@ -206,10 +206,10 @@ api.get("/claims/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
     .prepare(
-      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.problem, c.upstream_state FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
+      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.problem, c.upstream_state, c.formal_state, c.statement FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
     )
     .bind(c.req.param("id"))
-    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; problem: string | null; upstream_state: string | null }>();
+    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; problem: string | null; upstream_state: string | null; formal_state: string | null; statement: string | null }>();
   if (!cl) return fail(c, 404, "no such claim");
   const { results: ev } = await db
     .prepare(
@@ -222,7 +222,13 @@ api.get("/claims/:id", async (c) => {
     notice: NOTICE,
     ...AI_LABEL,
     claim: { id: cl.id, investigation_id: cl.investigation_id, untrusted_text: cl.text, verdict: cl.verdict, quoted_from: cl.origin_url },
-    erdos_problem: cl.problem ? { ...problemSources(cl.problem, cl.origin_url), database_state: cl.upstream_state } : undefined,
+    erdos_problem: cl.problem ? {
+          ...problemSources(cl.problem, cl.origin_url),
+          database_state: cl.upstream_state,
+          formal_conjectures_state: cl.formal_state,
+          untrusted_statement: cl.statement,
+          statement_source: cl.statement ? "google-deepmind/formal-conjectures, Apache 2.0" : undefined,
+        } : undefined,
     verdict_meaning: VERDICT_MEANINGS[cl.verdict as keyof typeof VERDICT_MEANINGS] ?? cl.verdict,
     evidence: ev
       .filter((e) => e.review_status !== "in_review")

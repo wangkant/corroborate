@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { checkUrl, decodeEntities, findQuote, htmlToText, paragraphs } from "../src/fetcher";
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
+import { readLean } from "../src/erdos";
 import { filedOnPage, parseFeed, problemNumbers } from "../src/leads";
 import { cacheKey, dailyLimitHit, secondsToMidnightUtc } from "../src/util";
+
+describe("formal-conjectures files", () => {
+  it("read the category and docstring of the main theorem, not of variants", () => {
+    const src = `/--\nA helper.\n-/\ndef h := 1\n\n/--\nAny graph on $n$ vertices can be decomposed into $O(n)$ many cycles and edges.\n-/\n@[category research solved, AMS 5]\ntheorem erdos_184 : True := sorry\n\n/-- A variant that is still open, stated here at length. -/\n@[category research open]\ntheorem erdos_184.variants.x : True := sorry\n`;
+    expect(readLean(src, "184")).toEqual({ state: "solved", statement: "Any graph on $n$ vertices can be decomposed into $O(n)$ many cycles and edges." });
+    expect(readLean(src, "18")).toEqual({ state: null, statement: null });
+  });
+});
 
 describe("cache keys", () => {
   it("keep only parameters routes read, in a fixed order, under the public path", () => {

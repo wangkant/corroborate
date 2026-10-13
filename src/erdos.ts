@@ -87,6 +87,47 @@ export async function refreshUpstream(db: D1Database, userAgent: string, now = D
   return settled;
 }
 
+const FORMAL_MAIN = (n: string) => `https://raw.githubusercontent.com/google-deepmind/formal-conjectures/main/FormalConjectures/ErdosProblems/${n}.lean`;
+
+// The research category and docstring of theorem erdos_N in a formal-conjectures file.
+export function readLean(source: string, n: string): { state: string | null; statement: string | null } {
+  const at = source.search(new RegExp(`theorem erdos_${n}(?![.\\w])`));
+  if (at < 0) return { state: null, statement: null };
+  const before = source.slice(Math.max(0, at - 3000), at);
+  const state = [...before.matchAll(/@\[category research (\w+)/g)].pop()?.[1] ?? null;
+  const doc = [...before.matchAll(/\/--([\s\S]*?)-\//g)].pop()?.[1]?.replace(/\s+/g, " ").trim() ?? "";
+  return { state, statement: doc.length >= 20 ? doc.slice(0, 1500) : null };
+}
+
+// formal-conjectures marks problems solved sooner than the problem list, so it is read too, a few files per run.
+export async function refreshFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 8): Promise<number> {
+  const { results } = await db
+    .prepare(
+      `SELECT id, problem, formal_state FROM claims
+       WHERE problem IS NOT NULL AND status = 'visible' AND origin_url LIKE '%/ErdosProblems/%'
+         AND (formal_checked_at IS NULL OR formal_checked_at < ?1)
+       ORDER BY formal_checked_at IS NOT NULL, formal_checked_at LIMIT ?2`,
+    )
+    .bind(now - 20 * 3_600_000, limit)
+    .all<{ id: string; problem: string; formal_state: string | null }>();
+  let solved = 0;
+  for (const cl of results) {
+    await db.prepare("UPDATE claims SET formal_checked_at = ?2 WHERE id = ?1").bind(cl.id, now).run();
+    const res = await fetch(FORMAL_MAIN(cl.problem), { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) continue;
+    const { state, statement } = readLean(await res.text(), cl.problem);
+    if (!state) continue;
+    await db.prepare("UPDATE claims SET formal_state = ?2, statement = COALESCE(?3, statement) WHERE id = ?1").bind(cl.id, state, statement).run();
+    if (cl.formal_state && cl.formal_state !== state && state === "solved") {
+      solved++;
+      await logEvent(db, null, "upstream", cl.id, `formal-conjectures now marks Erdős problem #${cl.problem} as solved (it was ${cl.formal_state})`);
+    }
+  }
+  return solved;
+}
+
+export const formalPage = (n: string) => `https://github.com/google-deepmind/formal-conjectures/blob/main/FormalConjectures/ErdosProblems/${n}.lean`;
+
 async function rollingInvestigation(db: D1Database, now: number): Promise<string> {
   const title = `Erdős problems named in new papers, ${new Date(now).toISOString().slice(0, 7)}`;
   const existing = await db.prepare("SELECT id FROM investigations WHERE title = ?1 AND status = 'open'").bind(title).first<{ id: string }>();

@@ -84,6 +84,7 @@ form.report label { font-size: 14px; color: var(--muted); display: flex; flex-di
 form.report input, form.report textarea, form.report select { font: inherit; color: var(--ink); background: transparent; border: 0; border-bottom: 1px solid var(--ink); padding: 6px 0; border-radius: 0; }
 form.report textarea { min-height: 6em; resize: vertical; }
 form.report button { align-self: flex-start; font: 600 15px/1 var(--sans); color: var(--bg); background: var(--accent); border: 0; padding: 10px 18px; border-radius: 3px; cursor: pointer; }
+.statement blockquote { margin: 4px 0 18px; padding-left: 14px; border-left: 2px solid var(--rule); font-family: var(--serif); overflow-wrap: anywhere; }
 p.error { color: var(--refute); }
 pre.token { font: 15px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; padding: 6px 0 8px; border-bottom: 2px solid var(--accent); width: fit-content; max-width: 100%; }
 ul.steps { padding-left: 1.2em; max-width: 46em; }

@@ -5,7 +5,7 @@ import { admin, api, authed, cacheSeconds, netHashMiddleware, siteUrl } from "./
 import { refreshShown, type AppEnv, type Env } from "./env";
 import { closeDueProposals } from "./governance";
 import { pages, setBase } from "./pages";
-import { refreshUpstream } from "./erdos";
+import { refreshFormal, refreshUpstream } from "./erdos";
 import { checkFiled, refreshLeads } from "./leads";
 // Imported eagerly: module setup counts toward isolate startup, not toward the CPU limit of the first MCP request.
 import { serveMcp } from "./mcp";
@@ -157,6 +157,7 @@ export default {
         await step("leads", () => refreshLeads(env.DB, ua));
         await step("proof-claims check", () => checkFiled(env.DB, ua));
         await step("upstream status", () => refreshUpstream(env.DB, ua));
+        await step("formal status", () => refreshFormal(env.DB, ua));
       })(),
     );
   },
