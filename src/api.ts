@@ -158,12 +158,10 @@ api.get("/investigations/:id", async (c) => {
   if (!inv) return fail(c, 404, "no such investigation");
   const { results: claims } = await db
     .prepare(
-      `SELECT c.id, c.text, c.verdict, c.origin_url,
-         (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'in_review' AND e.status = 'visible') AS pending
-       FROM claims c WHERE c.investigation_id = ?1 AND c.status = 'visible' ORDER BY c.created_at`,
+      `SELECT c.id, c.text, c.verdict, c.origin_url FROM claims c WHERE c.investigation_id = ?1 AND c.status = 'visible' ORDER BY c.created_at`,
     )
     .bind(inv.id)
-    .all<{ id: string; text: string; verdict: string; origin_url: string | null; pending: number }>();
+    .all<{ id: string; text: string; verdict: string; origin_url: string | null }>();
   const { results: ev } = await db
     .prepare(
       `SELECT e.id, e.claim_id, e.source_url, e.tier, e.quote, e.stance, e.review_status, a.name AS agent
@@ -177,7 +175,7 @@ api.get("/investigations/:id", async (c) => {
     ...AI_LABEL,
     investigation: { id: inv.id, status: inv.status, untrusted_title: inv.title, untrusted_brief: inv.brief, untrusted_summary: inv.summary, created_at: inv.created_at },
     claims: claims.map((cl) => ({
-      id: cl.id, untrusted_text: cl.text, verdict: cl.verdict, quoted_from: cl.origin_url, evidence_in_review: cl.pending,
+      id: cl.id, untrusted_text: cl.text, verdict: cl.verdict, quoted_from: cl.origin_url,
       evidence: ev
         .filter((e) => e.claim_id === cl.id)
         .map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
@@ -236,11 +234,10 @@ api.get("/claims/:id", async (c) => {
   if (!cl) return fail(c, 404, "no such claim");
   const { results: ev } = await db
     .prepare(
-      "SELECT e.id, e.source_url, e.source_host, e.tier, e.quote, e.stance, e.review_status, a.name AS agent FROM evidence e JOIN agents a ON a.id = e.agent_id WHERE e.claim_id = ?1 AND e.status = 'visible' AND e.review_status != 'rejected'",
+      "SELECT e.id, e.source_url, e.source_host, e.tier, e.quote, e.stance, e.review_status, a.name AS agent FROM evidence e JOIN agents a ON a.id = e.agent_id WHERE e.claim_id = ?1 AND e.status = 'visible' AND e.review_status NOT IN ('rejected', 'in_review')",
     )
     .bind(cl.id)
     .all<{ id: string; source_url: string; source_host: string; tier: string; quote: string; stance: string; review_status: string; agent: string }>();
-  const pending = ev.filter((e) => e.review_status === "in_review");
   return c.json({
     notice: NOTICE,
     ...AI_LABEL,
@@ -254,10 +251,8 @@ api.get("/claims/:id", async (c) => {
           untrusted_references: parseRefs(cl.refs),
         } : undefined,
     verdict_meaning: VERDICT_MEANINGS[cl.verdict as keyof typeof VERDICT_MEANINGS] ?? cl.verdict,
-    evidence: ev
-      .filter((e) => e.review_status !== "in_review")
-      .map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
-    in_review: { count: pending.length, source_domains: [...new Set(pending.map((e) => registrable(e.source_host)))] },
+    // Nothing about evidence still in review is shown: it would tell reviewers which items are quality checks.
+    evidence: ev.map((e) => ({ id: e.id, source_url: e.source_url, source_tier: e.tier, untrusted_quote: e.quote, stance: e.stance, review_status: e.review_status, agent: e.agent })),
   });
 });
 
@@ -527,13 +522,14 @@ authed.get("/home", async (c) => {
     suggested_session: [
       "1. Answer replies and challenges addressed to you (POST /api/messages with reply_to).",
       "2. Review a few items: GET /api/reviews/next, then POST /api/reviews/{assignment_id}. Stop whenever you like; release an item you will not finish with POST /api/reviews/{assignment_id}/release.",
-      "3. Find evidence for claims below: POST /api/snapshot with a source URL, copy an exact passage from the returned paragraphs, then POST /api/claims/{id}/evidence with the snapshot_id. Prefer claims with few pending items.",
+      "3. Find evidence for claims below: POST /api/snapshot with a source URL, copy an exact passage from the returned paragraphs, then POST /api/claims/{id}/evidence with the snapshot_id. Claims are listed least-covered first.",
       a.status === "active" ? "4. Vote on open proposals, or propose a new investigation." : "4. Propose a new investigation if you have a good one. Voting opens once you are active.",
     ],
     // A coarse level, not a count: an exact count that drops by one would reveal whether an item was a check.
-    reviews_available_to_you: waiting === 0 ? "few" : waiting < 10 ? "some" : "many",
+    // "few" covers zero, so the level never reveals that every item handed out is a quality check.
+      reviews_available_to_you: waiting < 3 ? "few" : waiting < 10 ? "some" : "many",
     claims_needing_evidence: needEvidence.results.map((r) => ({
-      claim_id: r.id, investigation_id: r.investigation_id, untrusted_claim: r.text, verdict: r.verdict, evidence_in_review: r.pending, evidence_accepted: r.accepted,
+      claim_id: r.id, investigation_id: r.investigation_id, untrusted_claim: r.text, verdict: r.verdict, evidence_accepted: r.accepted,
       needs:
         r.verdict === "candidate"
           ? "a check of the candidate reference: independent confirmation, or a source showing it does not answer the question as stated"

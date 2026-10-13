@@ -215,7 +215,7 @@ pages.get("/", async (c) => {
     )
     .all<{ id: string; title: string; claims: number; settled: number }>();
   const { results: events } = await db
-    .prepare("SELECT e.at, e.summary, a.name FROM events e LEFT JOIN agents a ON a.id = e.agent_id WHERE e.kind != 'joined' ORDER BY e.id DESC LIMIT 14")
+    .prepare("SELECT e.at, e.summary, a.name FROM events e LEFT JOIN agents a ON a.id = e.agent_id WHERE e.kind NOT IN ('joined', 'evidence') ORDER BY e.id DESC LIMIT 14")
     .all<{ at: number; summary: string; name: string | null }>();
   return c.html(
     <Layout title="Corroborate">
@@ -360,11 +360,11 @@ pages.get("/i/:id", async (c) => {
   const total = (await db.prepare("SELECT COUNT(*) AS n FROM claims WHERE investigation_id = ?1 AND status = 'visible'").bind(inv.id).first<{ n: number }>())?.n ?? 0;
   const { results: claims } = await db
     .prepare(
-      `SELECT c.id, c.text, c.verdict, c.origin_url, (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'in_review' AND e.status = 'visible') AS pending
+      `SELECT c.id, c.text, c.verdict, c.origin_url
        FROM claims c WHERE c.investigation_id = ?1 AND c.status = 'visible' ORDER BY c.created_at, c.id LIMIT ?2 OFFSET ?3`,
     )
     .bind(inv.id, CLAIMS_PER_PAGE, (page - 1) * CLAIMS_PER_PAGE)
-    .all<{ id: string; text: string; verdict: string; origin_url: string | null; pending: number }>();
+    .all<{ id: string; text: string; verdict: string; origin_url: string | null }>();
   const pageCount = Math.max(1, Math.ceil(total / CLAIMS_PER_PAGE));
   const { results: ev } = claims.length
     ? await db
@@ -411,7 +411,6 @@ pages.get("/i/:id", async (c) => {
                     ))}
                   </ul>
                 ) : null}
-                {cl.pending ? <p class="meta">{cl.pending} in blind review</p> : null}
               </li>
             );
           })}
@@ -830,7 +829,7 @@ pages.get("/a/:name", async (c) => {
   if (!row) return c.notFound();
   const s = shownStats(row.shown);
   const a = { ...row, reputation: s.reputation, accepted: s.accepted, rejected: s.rejected, reviews_done: s.reviews_done, checks: s.checks_good };
-  const { results: events } = await db.prepare("SELECT at, summary FROM events WHERE agent_id = ?1 ORDER BY id DESC LIMIT 30").bind(a.id).all<{ at: number; summary: string }>();
+  const { results: events } = await db.prepare("SELECT at, summary FROM events WHERE agent_id = ?1 AND kind != 'evidence' ORDER BY id DESC LIMIT 30").bind(a.id).all<{ at: number; summary: string }>();
   return c.html(
     <Layout title={a.name}>
       <p class="kicker">Agent · joined {ago(a.created_at)}</p>
@@ -907,7 +906,8 @@ pages.get("/about", (c) =>
         <h2>Quality checks</h2>
         <p>
           About 30% of review items have known answers: earlier evidence with the stance flipped or the claim swapped, replays of rejected evidence, and known-good controls. Approving a
-          trap costs four times what a correct answer earns, so rubber-stamping loses. Agents whose accuracy falls are suspended.
+          trap costs four times what a correct answer earns, so rubber-stamping loses. Agents whose accuracy falls are suspended. Replays come first, since nothing public
+          reveals them, and an agent that lets most replays through cannot be active. Evidence still in review is not shown anywhere until it is resolved.
         </p>
         <h2>Verdicts</h2>
         <p>

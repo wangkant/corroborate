@@ -115,7 +115,8 @@ async function pickEvidence(db: D1Database, me: Agent, now: number): Promise<str
 
 // A trap's right answer is "no" whatever the reviewer remembers, so anyone but the submitter may get one;
 // that keeps checks flowing in a community of three. Controls would be free points for people who
-// already judged the original, so they go only to fully independent reviewers.
+// already judged the original, so they go only to fully independent reviewers. Other golds reuse public
+// accepted evidence and can be matched against it; replays of unpublished rejected evidence cannot, so they go first.
 async function pickGold(db: D1Database, me: Agent, want: "control" | "trap"): Promise<string | null> {
   const independent =
     want === "control"
@@ -126,7 +127,7 @@ async function pickGold(db: D1Database, me: Agent, want: "control" | "trap"): Pr
       `SELECT g.id FROM golds g JOIN evidence e ON e.id = g.base_evidence_id JOIN agents a ON a.id = e.agent_id
        WHERE (g.expected = 'yes') = ?4 ${independent}
          AND NOT EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'gold' AND s.item_id = g.id AND s.reviewer_id = ?1)
-       ORDER BY RANDOM() LIMIT 1`,
+       ORDER BY g.kind = 'replay_rejected' DESC, RANDOM() LIMIT 1`,
     )
     .bind(me.id, me.net_hash, me.owner, want === "control" ? 1 : 0)
     .first<{ id: string }>();
@@ -369,10 +370,21 @@ export async function refreshStatus(db: D1Database, agentId: string) {
   const g = goldStats(a);
   const bad = g.total - g.good;
   const pct = FIXED.activate_min_accuracy_pct / 100;
+  // An agent that spots golds by matching public evidence, then approves everything else, still lets replays through.
+  const replay = await db
+    .prepare(
+      `SELECT COUNT(*) AS seen, COALESCE(SUM(s.verdict IN ('yes', 'partly')), 0) AS passed FROM assignments s JOIN golds g ON g.id = s.item_id
+       WHERE s.item_type = 'gold' AND s.reviewer_id = ?1 AND s.done_at IS NOT NULL AND g.kind = 'replay_rejected'`,
+    )
+    .bind(agentId)
+    .first<{ seen: number; passed: number }>();
+  const passesReplays = !replay || replay.seen < 2 || replay.passed * 2 <= replay.seen;
   let next: Agent["status"] = a.status;
   if (bad >= FIXED.suspend_after_bad_golds && g.accuracy < 0.5) next = "suspended";
+  else if (a.status === "active" && !passesReplays) next = "probation";
   else if (
     a.status === "probation" &&
+    passesReplays &&
     g.accuracy >= pct &&
     (g.total >= FIXED.activate_min_golds || (a.accepted >= FIXED.activate_alt_accepted && g.total >= FIXED.activate_alt_golds))
   )

@@ -5,6 +5,7 @@ import { refreshShown } from "../src/env";
 import { refreshFormal, refreshUpstream, scanFormal } from "../src/erdos";
 import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
+import { refreshStatus } from "../src/review";
 import { readStats, refreshStats } from "../src/stats";
 
 const BASE = "https://corroborate.test/corroborate";
@@ -489,7 +490,8 @@ describe("blind review, golds and reputation", () => {
     expect(blocked.json.reason).toMatch(/1 come from your network or owner/);
     expect((await call("GET", `/api/investigations/${inv.id}`)).json.claims[0].evidence).toHaveLength(0);
     const pendingView = await call("GET", `/api/claims/${inv.claims[0]}`);
-    expect(pendingView.json.in_review).toEqual({ count: 1, source_domains: ["wikipedia.org"] });
+    expect(pendingView.json.in_review).toBeUndefined();
+    expect(JSON.stringify(pendingView.json)).not.toContain("wikipedia");
     expect(pendingView.json.evidence).toHaveLength(0);
 
     for (const r of [r1, r2]) expect(await reviewTarget(r, "384,400 kilometres", "yes")).toBe(true);
@@ -921,6 +923,28 @@ describe("launch limits", () => {
     expect((await call("GET", "/api/me", { token: a.token })).json.agent).toMatchObject({ reputation: 3, quality_checks: { passed: 3, total: 3 } });
     expect(await refreshShown(db())).toBe(0);
     expect((await call("GET", `/a/${a.name}`)).text).toContain("3");
+  });
+
+  it("keeps agents that approve replays of rejected evidence out of active status", async () => {
+    const a = await register("10.74.0.1");
+    // Eight matched traps caught, two replays approved: 80% overall, which alone would activate.
+    await db().prepare("UPDATE agents SET traps_caught = 8, traps_missed = 2 WHERE id = ?1").bind(a.id).run();
+    const replay = (n: number, verdict: string) =>
+      db().batch([
+        db().prepare("INSERT INTO golds (id, base_evidence_id, kind, expected, claim_text, stance, quote, context, source_url, page_title, created_at) VALUES (?1, 'ev_x', 'replay_rejected', 'no', 'c', 'supports', 'q', 'x', 'https://example.org/', 't', 0)").bind(`gld_rp${n}`),
+        db().prepare("INSERT INTO assignments (id, item_type, item_id, reviewer_id, verdict, assigned_at, due_at, done_at) VALUES (?1, 'gold', ?2, ?3, ?4, 0, 1, 1)").bind(`asg_rp${n}`, `gld_rp${n}`, a.id, verdict),
+      ]);
+    await replay(1, "yes");
+    await replay(2, "partly");
+    await refreshStatus(db(), a.id);
+    expect((await db().prepare("SELECT status FROM agents WHERE id = ?1").bind(a.id).first<any>()).status).toBe("probation");
+    await replay(3, "no");
+    await replay(4, "misleading");
+    await refreshStatus(db(), a.id);
+    expect((await db().prepare("SELECT status FROM agents WHERE id = ?1").bind(a.id).first<any>()).status).toBe("active");
+    await replay(5, "yes");
+    await refreshStatus(db(), a.id);
+    expect((await db().prepare("SELECT status FROM agents WHERE id = ?1").bind(a.id).first<any>()).status).toBe("probation");
   });
 
   it("serves counts from a cached row the cron refreshes", async () => {
