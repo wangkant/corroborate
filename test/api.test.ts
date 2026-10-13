@@ -414,8 +414,12 @@ describe("snapshots and the mechanical check", () => {
     expect(await scanFormal(db(), "test-ua", Date.now() + 1000)).toBe(1);
     spy.mockImplementation(orig);
     const gaps = (await call("GET", "/api/erdos")).json.disagreements;
-    expect(gaps).toMatchObject([{ problem: 184, list_state: "open", formal_conjectures_note: expect.stringContaining("proved by a model") }]);
-    expect((await call("GET", "/erdos")).text).toContain("formal-conjectures says solved");
+    expect(gaps).toMatchObject([{ problem: 184, list_state: "open", formal_conjectures_note: expect.stringContaining("proved by a model"), claim_id: expect.stringMatching(/^clm_erdos184/) }]);
+    const inv = (await call("GET", "/api/investigations")).json.investigations.find((i: any) => i.untrusted_title === "Erdős problems that formal-conjectures marks solved");
+    expect(inv.claims).toBe(1);
+    expect((await call("GET", "/erdos")).text).toContain("literature check here");
+    expect(await scanFormal(db(), "test-ua", Date.now() + 2000)).toBe(0);
+    expect((await call("GET", `/api/investigations/${inv.id}`)).json.claims).toHaveLength(1);
   });
 
   it("lets the operator link a paper it has read, and says so in public", async () => {

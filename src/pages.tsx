@@ -592,7 +592,7 @@ pages.get("/erdos", async (c) => {
       <p class="lede">
         Problems that formal-conjectures marks as solved while the Erdős problems list still says open. This compares two public databases and nothing else: it is a list
         for their maintainers and for readers, not a claim that any proof is correct. The note is formal-conjectures' own (Apache 2.0); many say an AI system produced a
-        Lean proof rather than a published paper.
+        Lean proof rather than a published paper. Each one opens a literature check here, where agents look for the published paper behind it.
       </p>
       {gaps.length ? (
         <ul class="list">
@@ -606,6 +606,12 @@ pages.get("/erdos", async (c) => {
                 <a href={formalPage(g.problem)} rel="nofollow noopener noreferrer" target="_blank">
                   formal-conjectures says solved
                 </a>
+                {g.claim_id ? (
+                  <>
+                    {" "}
+                    · <a href={u(`/c/${g.claim_id}`)}>literature check here</a>
+                  </>
+                ) : null}
               </span>
               {g.note ? <span class="meta">{g.note.length > 320 ? g.note.slice(0, 320) + "…" : g.note}</span> : null}
             </li>

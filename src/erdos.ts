@@ -178,6 +178,7 @@ export async function scanFormal(db: D1Database, userAgent: string, now = Date.n
     const { state, statement } = readLean(await res.text(), row.problem);
     if (!state) continue;
     await db.prepare("UPDATE formal_problems SET fc_state = ?2, note = ?3 WHERE problem = ?1").bind(row.problem, state, statement).run();
+    if (state === "solved") await claimForSolvedElsewhere(db, row.problem, now);
     if (row.fc_state && row.fc_state !== state && state === "solved") {
       newlySolved++;
       await logEvent(db, null, "upstream", null, `formal-conjectures now marks Erdős problem #${row.problem} as solved; the problem list still says open`);
@@ -191,14 +192,17 @@ export interface Disagreement {
   list_state: string;
   note: string | null;
   checked_at: number;
+  claim_id: string | null;
 }
 
 export async function disagreements(db: D1Database): Promise<Disagreement[]> {
   const { results } = await db
     .prepare(
-      `SELECT problem, list_state, note, checked_at FROM formal_problems
-       WHERE fc_state = 'solved' AND list_state IN ('open', 'falsifiable', 'verifiable', 'decidable')
-       ORDER BY CAST(problem AS INTEGER) LIMIT 300`,
+      `SELECT f.problem, f.list_state, f.note, f.checked_at,
+         (SELECT c.id FROM claims c WHERE c.problem = f.problem AND c.status = 'visible' LIMIT 1) AS claim_id
+       FROM formal_problems f
+       WHERE f.fc_state = 'solved' AND f.list_state IN ('open', 'falsifiable', 'verifiable', 'decidable')
+       ORDER BY CAST(f.problem AS INTEGER) LIMIT 300`,
     )
     .all<Disagreement>();
   return results;
@@ -228,14 +232,34 @@ export async function claimsForProblems(db: D1Database, problems: string[], user
   const fresh = uncovered.map((n) => ({ n, info: lookup(yaml, n) })).filter((p) => p.info && OPEN_STATES.has(p.info.state));
   if (!fresh.length) return { added: 0, covered };
   const invId = await rollingInvestigation(db, now);
-  const stmts = fresh.map(({ n, info }) => {
-    const origin = info!.formalized ? lean(n) : `https://www.erdosproblems.com/${n}`;
-    const where = info!.formalized ? `(theorem erdos_${n} in formal-conjectures)` : `(as stated at erdosproblems.com/${n})`;
-    const text = `A published paper or arXiv preprint answers the main question of Erdős Problem #${n} ${where} in full (proof, disproof, or the exact value asked for) with no hypotheses beyond the problem's own.`;
-    return db
-      .prepare("INSERT OR IGNORE INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url, problem) VALUES (?1, ?2, ?3, ?4, 'system', ?5, ?6, ?7)")
-      .bind(`clm_erdos${n}x${now.toString(36).slice(-4)}`, invId, text, `erdos problem ${n} literature check`, now, origin, n);
-  });
-  await db.batch(stmts);
+  await db.batch(fresh.map(({ n, info }) => claimInsert(db, invId, n, info!.formalized, now)));
   return { added: fresh.length, covered: [...covered, ...fresh.map((p) => p.n)] };
+}
+
+function claimInsert(db: D1Database, invId: string, n: string, formalized: boolean, now: number): D1PreparedStatement {
+  const origin = formalized ? lean(n) : `https://www.erdosproblems.com/${n}`;
+  const where = formalized ? `(theorem erdos_${n} in formal-conjectures)` : `(as stated at erdosproblems.com/${n})`;
+  const text = `A published paper or arXiv preprint answers the main question of Erdős Problem #${n} ${where} in full (proof, disproof, or the exact value asked for) with no hypotheses beyond the problem's own.`;
+  return db
+    .prepare("INSERT OR IGNORE INTO claims (id, investigation_id, text, text_key, created_by, created_at, origin_url, problem) VALUES (?1, ?2, ?3, ?4, 'system', ?5, ?6, ?7)")
+    .bind(`clm_erdos${n}x${now.toString(36).slice(-4)}`, invId, text, `erdos problem ${n} literature check`, now, origin, n);
+}
+
+export const FORMAL_BRIEF =
+  "google-deepmind/formal-conjectures marks these Erdős problems as solved while the Erdős problems list still says open. For each, find the published paper " +
+  "or arXiv preprint that answers the main statement, if one exists: formal-conjectures' own note on the problem often cites it. A Lean proof or an announcement " +
+  "with no paper is a note, not support. Support a claim only with a quote of a theorem that answers the main statement in full, with the same quantifiers, " +
+  "ranges and constants; bounds, special cases and variants are notes. formal-conjectures, GitHub, Wikipedia, MathWorld and erdosproblems.com do not count " +
+  "as evidence. Every note names the paper (authors, year, arXiv id or DOI). Nothing is posted to other sites, and results stay candidate references until a " +
+  "mathematician reads them.";
+
+// A problem formal-conjectures calls solved while the list says open is a ready-made literature check:
+// the paper behind it, if any, is the evidence the list's maintainers would want.
+export async function claimForSolvedElsewhere(db: D1Database, n: string, now = Date.now()): Promise<boolean> {
+  if (await claimFor(db, n)) return false;
+  const title = "Erdős problems that formal-conjectures marks solved";
+  const existing = await db.prepare("SELECT id FROM investigations WHERE title = ?1 AND status = 'open'").bind(title).first<{ id: string }>();
+  const invId = existing?.id ?? (await createInvestigation(db, null, title, FORMAL_BRIEF, [], null, now, { excludeDomains: EXCLUDE, verdictCap: "candidate" }));
+  const r = await claimInsert(db, invId, n, true, now).run();
+  return (r.meta.changes ?? 0) > 0;
 }
