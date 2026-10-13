@@ -107,6 +107,47 @@ export function readLean(source: string, n: string): { state: string | null; sta
   return { state, statement: doc.length >= 20 ? doc.slice(0, 1500) : null };
 }
 
+export interface Ref {
+  text: string;
+  url: string | null;
+}
+
+// The "*References:*" list in a formal-conjectures file header, which often cites the paper that settled the problem.
+export function readRefs(source: string): Ref[] {
+  const header = source.match(/\/-!([\s\S]*?)-\//)?.[1] ?? "";
+  const start = header.indexOf("*References:*");
+  if (start < 0) return [];
+  const entries: string[] = [];
+  for (const line of header.slice(start).split("\n").slice(1)) {
+    if (line.startsWith("- ")) entries.push(line.slice(2));
+    else if (/^\s+\S/.test(line) && entries.length) entries[entries.length - 1] += " " + line.trim();
+    else if (line.trim()) break;
+  }
+  return entries
+    .filter((e) => !/^\[erdosproblems\.com\/\d+\]/.test(e))
+    .slice(0, 15)
+    .map((e) => {
+      const link = [...e.matchAll(/\]\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]!).find((u) => !u.includes("erdosproblems.com"));
+      const bare = e.replace(/\[[^\]]*\]\([^)]*\)/g, "").match(/https?:\/\/\S+/)?.[0];
+      const arxiv = e.match(/arXiv:(\d{4}\.\d{4,5})/)?.[1];
+      const url = link ?? bare ?? (arxiv ? `https://arxiv.org/abs/${arxiv}` : null);
+      const text = e.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 300);
+      return { text, url };
+    });
+}
+
+// Stored references come back as data; only http(s) links survive, so nothing else can reach an href.
+export function parseRefs(raw: string | null): Ref[] {
+  try {
+    const list = raw ? (JSON.parse(raw) as Ref[]) : [];
+    return list
+      .filter((r) => r && typeof r.text === "string")
+      .map((r) => ({ text: r.text.slice(0, 300), url: typeof r.url === "string" && /^https?:\/\//.test(r.url) ? r.url : null }));
+  } catch {
+    return [];
+  }
+}
+
 // formal-conjectures marks problems solved sooner than the problem list, so it is read too, a few files per run.
 // Every claim is tried, since problems get formalized after their claim opens; a missing file is skipped.
 export async function refreshFormal(db: D1Database, userAgent: string, now = Date.now(), limit = 8): Promise<number> {
@@ -124,9 +165,14 @@ export async function refreshFormal(db: D1Database, userAgent: string, now = Dat
     await db.prepare("UPDATE claims SET formal_checked_at = ?2 WHERE id = ?1").bind(cl.id, now).run();
     const res = await fetch(FORMAL_MAIN(cl.problem), { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) continue;
-    const { state, statement } = readLean(await res.text(), cl.problem);
+    const source = await res.text();
+    const { state, statement } = readLean(source, cl.problem);
     if (!state) continue;
-    await db.prepare("UPDATE claims SET formal_state = ?2, statement = COALESCE(?3, statement) WHERE id = ?1").bind(cl.id, state, statement).run();
+    const refs = readRefs(source);
+    await db
+      .prepare("UPDATE claims SET formal_state = ?2, statement = COALESCE(?3, statement), refs = ?4 WHERE id = ?1")
+      .bind(cl.id, state, statement, refs.length ? JSON.stringify(refs) : null)
+      .run();
     if (cl.formal_state && cl.formal_state !== state && state === "solved") {
       solved++;
       await logEvent(db, null, "upstream", cl.id, `formal-conjectures now marks Erdős problem #${cl.problem} as solved (it was ${cl.formal_state})`);

@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { shownStats, type Agent, type AppEnv } from "./env";
 import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, sha256Hex, type Page } from "./fetcher";
-import { disagreements, erdosOverview, problemSources, refreshUpstream } from "./erdos";
+import { disagreements, erdosOverview, parseRefs, problemSources, refreshUpstream } from "./erdos";
 import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, linkLead, matchLead, recentLeads, refreshLeads } from "./leads";
@@ -229,10 +229,10 @@ api.get("/claims/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
     .prepare(
-      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.problem, c.upstream_state, c.formal_state, c.statement FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
+      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.problem, c.upstream_state, c.formal_state, c.statement, c.refs FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
     )
     .bind(c.req.param("id"))
-    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; problem: string | null; upstream_state: string | null; formal_state: string | null; statement: string | null }>();
+    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; problem: string | null; upstream_state: string | null; formal_state: string | null; statement: string | null; refs: string | null }>();
   if (!cl) return fail(c, 404, "no such claim");
   const { results: ev } = await db
     .prepare(
@@ -251,6 +251,7 @@ api.get("/claims/:id", async (c) => {
           formal_conjectures_state: cl.formal_state,
           untrusted_statement: cl.statement,
           statement_source: cl.statement ? "google-deepmind/formal-conjectures, Apache 2.0" : undefined,
+          untrusted_references: parseRefs(cl.refs),
         } : undefined,
     verdict_meaning: VERDICT_MEANINGS[cl.verdict as keyof typeof VERDICT_MEANINGS] ?? cl.verdict,
     evidence: ev

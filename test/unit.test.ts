@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkUrl, decodeEntities, findQuote, htmlToText, paragraphs } from "../src/fetcher";
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
-import { readLean } from "../src/erdos";
+import { parseRefs, readLean, readRefs } from "../src/erdos";
 import { filedOnPage, parseFeed, problemNumbers } from "../src/leads";
 import { cacheKey, dailyLimitHit, secondsToMidnightUtc } from "../src/util";
 
@@ -10,6 +10,17 @@ describe("formal-conjectures files", () => {
     const src = `/--\nA helper.\n-/\ndef h := 1\n\n/--\nAny graph on $n$ vertices can be decomposed into $O(n)$ many cycles and edges.\n-/\n@[category research solved, AMS 5]\ntheorem erdos_184 : True := sorry\n\n/-- A variant that is still open, stated here at length. -/\n@[category research open]\ntheorem erdos_184.variants.x : True := sorry\n`;
     expect(readLean(src, "184")).toEqual({ state: "solved", statement: "Any graph on $n$ vertices can be decomposed into $O(n)$ many cycles and edges." });
     expect(readLean(src, "18")).toEqual({ state: null, statement: null });
+  });
+});
+
+describe("formal-conjectures references", () => {
+  it("pick up markdown links, arXiv ids and bare URLs, and drop the problem page", () => {
+    const src = `/-!\n# Erdős Problem 184\n\n*References:*\n- [erdosproblems.com/184](https://www.erdosproblems.com/184)\n- [BM22] Bucić, M. and Montgomery, R., Towards the conjecture.\n  arXiv:2211.07689 (2022).\n- [Ge26] Geneson, J., *Deletion thresholds*.\n  [arXiv:2609.25107](https://arxiv.org/abs/2609.25107) (2026).\n- [OAI26a] OpenAI, *A linear decomposition*. Preprint (2026).\n  https://github.com/openai/math/blob/x/main.pdf\n- [Py85] Pyber, L., An Erdős-Gallai conjecture. Combinatorica (1985).\n-/\n`;
+    const refs = readRefs(src);
+    expect(refs.map((r) => r.url)).toEqual(["https://arxiv.org/abs/2211.07689", "https://arxiv.org/abs/2609.25107", "https://github.com/openai/math/blob/x/main.pdf", null]);
+    expect(refs[1]!.text).toContain("arXiv:2609.25107 (2026)");
+    expect(parseRefs(JSON.stringify([{ text: "x", url: "javascript:alert(1)" }]))).toEqual([{ text: "x", url: null }]);
+    expect(parseRefs("not json")).toEqual([]);
   });
 });
 

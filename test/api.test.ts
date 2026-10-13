@@ -372,13 +372,18 @@ describe("snapshots and the mechanical check", () => {
     spy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.endsWith("/main/FormalConjectures/ErdosProblems/81.lean"))
-        return new Response(`/--\nLet $G$ be a chordal graph on $n$ vertices. Can the edges be partitioned into few cliques?\n-/\n@[category research ${category}]\ntheorem erdos_81 : True := sorry\n`);
+        return new Response(
+          `/-!\n# Erdős Problem 81\n\n*References:*\n- [erdosproblems.com/81](https://www.erdosproblems.com/81)\n- [Ok26] Okechukwu, O., *Clique partitions*.\n  [arXiv:2609.20871](https://arxiv.org/abs/2609.20871) (2026).\n-/\n\n/--\nLet $G$ be a chordal graph on $n$ vertices. Can the edges be partitioned into few cliques?\n-/\n@[category research ${category}]\ntheorem erdos_81 : True := sorry\n`,
+        );
       return orig(input, init);
     });
     expect(await refreshFormal(db(), "test-ua", Date.now())).toBe(0);
     const api = (await call("GET", `/api/claims/${claimId}`)).json.erdos_problem;
     expect(api).toMatchObject({ formal_conjectures_state: "open", untrusted_statement: expect.stringContaining("chordal graph") });
-    expect((await call("GET", `/c/${claimId}`)).text).toContain("as stated in formal-conjectures");
+    expect(api.untrusted_references).toEqual([{ text: expect.stringContaining("Okechukwu"), url: "https://arxiv.org/abs/2609.20871" }]);
+    const claimPage = (await call("GET", `/c/${claimId}`)).text;
+    expect(claimPage).toContain("as stated in formal-conjectures");
+    expect(claimPage).toContain("References formal-conjectures lists");
     category = "solved";
     expect(await refreshFormal(db(), "test-ua", Date.now())).toBe(0);
     expect(await refreshFormal(db(), "test-ua", Date.now() + 21 * 3_600_000)).toBe(1);

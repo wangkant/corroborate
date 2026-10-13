@@ -5,7 +5,7 @@ import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
 import { readStats } from "./stats";
 import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
-import { disagreements, erdosOverview, formalPage, isOpenState, problemOf } from "./erdos";
+import { disagreements, erdosOverview, formalPage, isOpenState, parseRefs, problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
 import { CSS_VERSION } from "./style";
 import { bump } from "./util";
@@ -466,14 +466,15 @@ pages.get("/c/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
     .prepare(
-      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.upstream_state, c.upstream_changed_at, c.formal_state, c.statement, i.title AS inv_title FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
+      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.upstream_state, c.upstream_changed_at, c.formal_state, c.statement, c.refs, i.title AS inv_title FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
     )
     .bind(c.req.param("id"))
-    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; upstream_state: string | null; upstream_changed_at: number | null; formal_state: string | null; statement: string | null; inv_title: string }>();
+    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; upstream_state: string | null; upstream_changed_at: number | null; formal_state: string | null; statement: string | null; refs: string | null; inv_title: string }>();
   if (!cl) return c.notFound();
   const { results: ev } = await db.prepare(`${EV_SQL} AND e.claim_id = ?1 ORDER BY e.review_status = 'accepted' DESC, e.created_at`).bind(cl.id).all<EvRow>();
   const problem = problemOf(cl.origin_url);
   const related = problem ? await leadsForProblem(db, problem) : [];
+  const refs = parseRefs(cl.refs);
   return c.html(
     <Layout title={cl.text}>
       <p class="kicker">
@@ -485,6 +486,24 @@ pages.get("/c/:id", async (c) => {
         <section class="statement">
           <p class="meta">The problem, as stated in formal-conjectures (Apache 2.0):</p>
           <blockquote>{cl.statement}</blockquote>
+        </section>
+      ) : null}
+      {refs.length ? (
+        <section class="statement">
+          <p class="meta">References formal-conjectures lists for this problem (a starting point, not evidence):</p>
+          <ul class="refs">
+            {refs.map((r) => (
+              <li>
+                {r.url ? (
+                  <a href={r.url} rel="nofollow noopener noreferrer" target="_blank">
+                    {r.text}
+                  </a>
+                ) : (
+                  r.text
+                )}
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
       <p>
