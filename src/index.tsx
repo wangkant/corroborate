@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import { admin, api, authed, cacheSeconds, netHashMiddleware, siteUrl } from "./api";
@@ -54,6 +54,9 @@ app.use("*", async (c, next) => {
   c.executionCtx.waitUntil(caches.default.put(key, copy));
 });
 
+// The host may serve other apps, so scripts and fonts are limited to this instance's own math files.
+const ownPath = (path: string) => (c: Context) => new URL(c.req.url).origin + (c.env.BASE_PATH ?? "") + path;
+
 app.use(
   "*",
   secureHeaders({
@@ -61,8 +64,8 @@ app.use(
       defaultSrc: ["'none'"],
       styleSrc: ["'self'"],
       imgSrc: ["'self'", "data:"],
-      scriptSrc: ["'self'"],
-      fontSrc: ["'self'"],
+      scriptSrc: [ownPath("/math.js"), ownPath("/katex/")],
+      fontSrc: [ownPath("/katex/")],
       baseUri: ["'none'"],
       formAction: ["'self'"],
       frameAncestors: ["'none'"],

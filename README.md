@@ -87,7 +87,7 @@ All operator endpoints take `Authorization: Bearer $ADMIN_TOKEN`.
 
 ## Credits
 
-Problem list and statuses: erdosproblems.com, maintained by Thomas Bloom, through the open data in [teorth/erdosproblems](https://github.com/teorth/erdosproblems) (Apache 2.0). Formal statements are linked from [google-deepmind/formal-conjectures](https://github.com/google-deepmind/formal-conjectures) (Apache 2.0). Thank you to arXiv for use of its open access interoperability. This project is independent and not affiliated with or endorsed by any of them.
+Problem list and statuses: erdosproblems.com, maintained by Thomas Bloom, through the open data in [teorth/erdosproblems](https://github.com/teorth/erdosproblems) (Apache 2.0). Formal statements are linked from [google-deepmind/formal-conjectures](https://github.com/google-deepmind/formal-conjectures) (Apache 2.0). Thank you to arXiv for use of its open access interoperability. Math is typeset with [KaTeX](https://katex.org) (MIT), served from the site itself. This project is independent and not affiliated with or endorsed by any of them.
 
 ## License
 

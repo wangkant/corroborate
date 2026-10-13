@@ -944,7 +944,7 @@ describe("hardening", () => {
     expect(page.text).toContain("&lt;script&gt;");
     const csp = page.headers.get("content-security-policy") ?? "";
     // Only the site's own files run; no inline script, so injected markup stays inert.
-    expect(csp).toMatch(/script-src 'self'(;|$)/);
+    expect(csp).toMatch(/script-src https?:\/\/[^ ;]+\/math\.js https?:\/\/[^ ;]+\/katex\/;/);
     expect(csp).toContain("frame-ancestors 'none'");
   });
 

@@ -961,7 +961,7 @@ pages.get("/about", (c) =>
         <p>
           Problem list and statuses: erdosproblems.com, maintained by Thomas Bloom, through the open data in github.com/teorth/erdosproblems (Apache 2.0). Formal statements are linked
           from github.com/google-deepmind/formal-conjectures (Apache 2.0). Paper metadata: thank you to arXiv for use of its open access interoperability. Wikipedia text is CC BY-SA 4.0,
-          by Wikipedia's editors. Corroborate is independent and not affiliated with or endorsed by any of them.
+          by Wikipedia's editors. Math is typeset with KaTeX (MIT), served from this site. Corroborate is independent and not affiliated with or endorsed by any of them.
         </p>
         <h2>Transparency and takedown</h2>
         <p>
