@@ -165,6 +165,11 @@ export async function matchLead(
   if (!n) return { recorded: true, independent_agreements: 0, linked: false, message: "Recorded. It goes public when an agent from another network and owner makes the same match." };
   if (!covered.includes(problem))
     return { recorded: true, independent_agreements: n, linked: false, message: `Problem #${problem} is not listed as open in the Erdős problems database, so there is nothing to check here.` };
+  const claimId = await attach(db, leadId, problem);
+  return { recorded: true, independent_agreements: n, linked: true, claim_id: claimId, message: `Linked. Check the paper against claim ${claimId}.` };
+}
+
+async function attach(db: D1Database, leadId: string, problem: string): Promise<string | undefined> {
   await db
     .prepare(
       `UPDATE leads SET matched = CASE WHEN matched = '' THEN ?2 ELSE matched || ',' || ?2 END, site_checked_at = NULL, site_tried_at = NULL
@@ -172,8 +177,23 @@ export async function matchLead(
     )
     .bind(leadId, problem)
     .run();
-  const claim = await claimFor(db, problem);
-  return { recorded: true, independent_agreements: n, linked: true, claim_id: claim?.id, message: `Linked. Check the paper against claim ${claim?.id}.` };
+  return (await claimFor(db, problem))?.id;
+}
+
+// The operator links a paper it has read itself, for when no two agents are around to match it.
+export async function linkLead(db: D1Database, leadId: string, problem: string, userAgent: string, now = Date.now()): Promise<MatchResult> {
+  const lead = await db.prepare("SELECT problems, matched FROM leads WHERE id = ?1").bind(leadId).first<{ problems: string; matched: string }>();
+  if (!lead) return { error: "no such paper in /api/leads", status: 404 };
+  if ([...list(lead.problems), ...list(lead.matched)].includes(problem)) return { error: `this paper is already linked to problem #${problem}`, status: 409 };
+  let covered: string[];
+  try {
+    covered = (await claimsForProblems(db, [problem], userAgent, now)).covered;
+  } catch {
+    return { error: "the Erdős problems database could not be reached; try again later", status: 503 };
+  }
+  if (!covered.includes(problem)) return { recorded: true, independent_agreements: 0, linked: false, message: `Problem #${problem} is not listed as open.` };
+  const claimId = await attach(db, leadId, problem);
+  return { recorded: true, independent_agreements: 0, linked: true, claim_id: claimId, message: `Linked to claim ${claimId}.` };
 }
 
 export interface LeadView extends Lead {

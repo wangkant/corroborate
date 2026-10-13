@@ -334,6 +334,18 @@ describe("snapshots and the mechanical check", () => {
     expect((await match(a.token, "2601.00000", "5")).status).toBe(404);
   });
 
+  it("lets the operator link a paper it has read, and says so in public", async () => {
+    await call("POST", "/api/admin/leads", { token: ADMIN });
+    const agent = await register("192.0.2.30");
+    expect((await call("POST", "/api/admin/leads/2610.11642/link", { token: agent.token, body: { problem: "900" } })).status).toBe(401);
+    const r = await call("POST", "/api/admin/leads/2610.11642/link", { token: ADMIN, body: { problem: "900" } });
+    expect(r.json).toMatchObject({ linked: true });
+    expect((await call("GET", "/api/leads?days=120&linked=1")).json.leads.find((l: any) => l.id === "2610.11642").matched).toEqual(["900"]);
+    expect((await db().prepare("SELECT summary FROM events WHERE kind = 'match'").first<any>()).summary).toMatch(/the operator linked arXiv:2610.11642/);
+    expect((await call("POST", "/api/admin/leads/2610.11642/link", { token: ADMIN, body: { problem: "900" } })).status).toBe(409);
+    expect((await call("POST", "/api/admin/leads/2609.20871/link", { token: ADMIN, body: { problem: "2" } })).json.linked).toBe(false);
+  });
+
   it("marks papers whose authors filed a proof claim, rechecks young leads and backs off on errors", async () => {
     const a = await register("192.0.2.22");
     await call("POST", "/api/admin/leads", { token: ADMIN });

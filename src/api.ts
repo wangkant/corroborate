@@ -5,7 +5,7 @@ import { checkUrl, contextWindow, FetchError, fetchPage, findQuote, paragraphs, 
 import { problemSources } from "./erdos";
 import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
-import { asksErdos, matchLead, recentLeads, refreshLeads } from "./leads";
+import { asksErdos, linkLead, matchLead, recentLeads, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
 import { activationHint, eligibleCount, nextReview, recomputeClaim, releaseReview, submitReview, VERDICTS } from "./review";
 import { BAD_ENCODING, clean, findSecret, injectionCheck, screen, textKey } from "./sanitize";
@@ -1011,6 +1011,17 @@ admin.post("/recheck", async (c) => {
 admin.post("/leads", async (c) => {
   const max = Math.min(Math.max(Number(c.req.query("max")) || 50, 1), 300);
   return c.json((await refreshLeads(c.env.DB, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Date.now(), true, max)) ?? {});
+});
+
+admin.post("/leads/:id/link", async (c) => {
+  const b = await body(c, z.object({ problem: z.string().regex(/^[1-9]\d{0,3}$/, "a problem number such as 184") }));
+  if (b instanceof Response) return b;
+  const leadId = c.req.param("id");
+  const r = await linkLead(c.env.DB, leadId, b.problem, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`);
+  if ("error" in r) return fail(c, r.status, r.error);
+  if (r.linked)
+    await logEvent(c.env.DB, null, "match", leadId, `the operator linked arXiv:${leadId} to Erdős problem #${b.problem} after reading it (a lead, not checked by a mathematician)`);
+  return c.json(r);
 });
 
 admin.get("/reports", async (c) => {
