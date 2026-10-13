@@ -288,7 +288,7 @@ describe("snapshots and the mechanical check", () => {
     expect((await call("GET", `/api/claims/${claimId}`)).json.erdos_problem).toMatchObject({
       number: 81,
       statement_page: "https://www.erdosproblems.com/81",
-      formal_statement: "https://raw.githubusercontent.com/google-deepmind/formal-conjectures/abc/FormalConjectures/ErdosProblems/81.lean",
+      formal_statement: "https://raw.githubusercontent.com/google-deepmind/formal-conjectures/main/FormalConjectures/ErdosProblems/81.lean",
     });
     const linked = (await call("GET", "/api/leads?days=120&linked=1")).json.leads;
     expect(linked.length).toBeGreaterThan(0);

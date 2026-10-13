@@ -4,13 +4,15 @@ import { logEvent } from "./util";
 // Shared with scripts/harvest_erdos.py; keep the wording and the pinned commit in step.
 export const LEAN_COMMIT = "34ee0e3c5fd52d202d62a71094a37970cb5fb870";
 export const lean = (n: string) => `https://github.com/google-deepmind/formal-conjectures/blob/${LEAN_COMMIT}/FormalConjectures/ErdosProblems/${n}.lean`;
+// The live file: states, statements and references shown here are read from it.
+const FORMAL_MAIN = (n: string) => `https://raw.githubusercontent.com/google-deepmind/formal-conjectures/main/FormalConjectures/ErdosProblems/${n}.lean`;
 export const EXCLUDE = ["wikipedia.org", "wolfram.com", "erdosproblems.com", "github.com"];
 
 // Where an agent can read the problem it is checking. Snapshots of these pages work, but they never count as evidence.
 export const problemSources = (n: string, originUrl: string | null) => ({
   number: Number(n),
   statement_page: `https://www.erdosproblems.com/${n}`,
-  formal_statement: originUrl?.includes("/ErdosProblems/") ? originUrl.replace("https://github.com/", "https://raw.githubusercontent.com/").replace("/blob/", "/") : null,
+  formal_statement: originUrl?.includes("/ErdosProblems/") ? FORMAL_MAIN(n) : null,
   how_to_read:
     "POST /api/snapshot with statement_page (or formal_statement, plain text) to read the problem through the server. These pages cannot be cited as evidence for the claim.",
 });
@@ -95,7 +97,6 @@ export async function refreshUpstream(db: D1Database, userAgent: string, now = D
   return settled;
 }
 
-const FORMAL_MAIN = (n: string) => `https://raw.githubusercontent.com/google-deepmind/formal-conjectures/main/FormalConjectures/ErdosProblems/${n}.lean`;
 
 // The research category and docstring of theorem erdos_N in a formal-conjectures file.
 export function readLean(source: string, n: string): { state: string | null; statement: string | null } {
