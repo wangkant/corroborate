@@ -189,6 +189,7 @@ export interface ErdosRow {
   upstream_state: string | null;
   formal_state: string | null;
   statement: string | null;
+  origin_url: string | null;
   papers: number;
   accepted: number;
 }
@@ -197,7 +198,7 @@ export interface ErdosRow {
 export async function erdosOverview(db: D1Database): Promise<ErdosRow[]> {
   const { results } = await db
     .prepare(
-      `SELECT c.id, c.problem, c.verdict, c.upstream_state, c.formal_state, c.statement,
+      `SELECT c.id, c.problem, c.verdict, c.upstream_state, c.formal_state, c.statement, c.origin_url,
          (SELECT COUNT(*) FROM leads l WHERE ',' || l.problems || ',' LIKE '%,' || c.problem || ',%' OR ',' || l.matched || ',' LIKE '%,' || c.problem || ',%') AS papers,
          (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'accepted' AND e.status = 'visible') AS accepted
        FROM claims c JOIN investigations i ON i.id = c.investigation_id

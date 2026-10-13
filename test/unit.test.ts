@@ -35,6 +35,7 @@ describe("math in statements", () => {
     expect(show("$$R(C_4,K_n) \\ll n^{2-c}.$$ The prize of $100 is offered in [Er78] for a proof.")).toBe("[[R(C_4,K_n) \\ll n^{2-c}.]] The prize of $100 is offered in [Er78] for a proof.");
     expect(show("A $500 prize, and $\\tau(n)$ counts divisors.")).toBe("A $500 prize, and [\\tau(n)] counts divisors.");
     expect(show("Costs \\$5 and $x$.")).toBe("Costs $5 and [x].");
+    expect(show("Prizes of $25 or $50 for $n=3$.")).toBe("Prizes of $25 or $50 for [n=3].");
     expect(show("Then $x > 0 \\text{ for all } n$.")).toBe("Then [x > 0 \\text{ for all } n].");
   });
   it("cuts before a formula rather than through it", () => {

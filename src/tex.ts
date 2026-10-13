@@ -7,6 +7,9 @@ export interface TexPart {
 // Two plain words in a row mean the "$" opened prose (a prize such as "$100 is offered"), not math; words in math sit behind \text or a backslash.
 const PROSE = /(?:^|[\s(])[A-Za-z]{2,}[,.;:]?\s+[A-Za-z]{2,}(?=[\s.,;:)]|$)/;
 
+// "$25 or $50": a number, a space, then a plain word.
+const AMOUNT = /^\d[\d,.]*\s+[A-Za-z]{2,}\b/;
+
 function closing(text: string, from: string, at: number): number {
   for (let i = text.indexOf(from, at); i >= 0; i = text.indexOf(from, i + 1)) if (text[i - 1] !== "\\") return i;
   return -1;
@@ -42,7 +45,7 @@ export function texParts(text: string, max = Infinity): { parts: TexPart[]; cut:
       const mark = display ? "$$" : "$";
       const end = closing(text, mark, i + mark.length);
       const body = end < 0 ? "" : text.slice(i + mark.length, end);
-      if (body.trim() && !PROSE.test(body.replace(/\\[A-Za-z]+\{[^{}]*\}/g, " "))) {
+      if (body.trim() && !PROSE.test(body.replace(/\\[A-Za-z]+\{[^{}]*\}/g, " ")) && !AMOUNT.test(body)) {
         if (!flush()) return { parts, cut: true };
         if (len + body.length > max) {
           const last = parts.at(-1);

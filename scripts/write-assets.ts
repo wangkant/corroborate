@@ -17,6 +17,9 @@ rmSync(new URL("skill.md", dir), { force: true });
 
 // KaTeX's CSS lists woff2 first, which every current browser reads, so the older font formats stay out.
 const katex = new URL("../node_modules/katex/", import.meta.url);
+// The folder is cached for a year, so its name must match the files inside.
+const installed = JSON.parse(readFileSync(new URL("package.json", katex), "utf8")).version;
+if (installed !== KATEX_VERSION) throw new Error(`katex ${installed} is installed but KATEX_VERSION says ${KATEX_VERSION}`);
 rmSync(new URL("katex/", dir), { recursive: true, force: true });
 const out = new URL(`katex/${KATEX_VERSION}/`, dir);
 mkdirSync(new URL("fonts/", out), { recursive: true });

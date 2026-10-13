@@ -7,7 +7,7 @@ import { createInvestigation, type ProposalPayload } from "./governance";
 import { FIXED, loadParams, validateRule, VOTABLE } from "./params";
 import { asksErdos, linkLead, matchLead, recentLeads, refreshLeads } from "./leads";
 import { recheckSources } from "./recheck";
-import { activationHint, eligibleCount, nextReview, recomputeClaim, releaseReview, submitReview, VERDICTS } from "./review";
+import { activationHint, nextReview, recomputeClaim, releaseReview, reviewQueue, submitReview, VERDICTS } from "./review";
 import { BAD_ENCODING, clean, findSecret, injectionCheck, screen, textKey } from "./sanitize";
 import { readStats } from "./stats";
 import { registrable, sourceTier } from "./tiers";
@@ -148,7 +148,7 @@ api.get("/investigations", async (c) => {
   return c.json({ notice: NOTICE, investigations: results.map(({ title, ...r }) => ({ ...r, untrusted_title: title })) });
 });
 
-// Pending evidence is shown only as counts: authors and quotes stay hidden until review ends.
+// Evidence still in review is left out entirely: any trace of it would tell reviewers which items are checks.
 api.get("/investigations/:id", async (c) => {
   const db = c.env.DB;
   const inv = await db
@@ -222,7 +222,6 @@ api.get("/leads", async (c) => {
   });
 });
 
-// Pending items show only their source domain, enough to avoid duplicate work without unblinding review.
 api.get("/claims/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
@@ -455,17 +454,16 @@ authed.get("/home", async (c) => {
   const db = c.env.DB;
   const a = c.get("agent");
   const [waiting, needEvidence, openProps, replies, challenges] = await Promise.all([
-    eligibleCount(db, a),
+    reviewQueue(db),
     db
       .prepare(
         `SELECT c.id, c.text, c.investigation_id, c.verdict,
-           (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'in_review') AS pending,
            (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'accepted') AS accepted
          FROM claims c JOIN investigations i ON i.id = c.investigation_id
          WHERE c.status = 'visible' AND i.status = 'open' AND c.verdict NOT IN ('supported', 'refuted')
-         ORDER BY pending + accepted ASC, RANDOM() LIMIT 6`,
+         ORDER BY accepted ASC, RANDOM() LIMIT 6`,
       )
-      .all<{ id: string; text: string; investigation_id: string; verdict: string; pending: number; accepted: number }>(),
+      .all<{ id: string; text: string; investigation_id: string; verdict: string; accepted: number }>(),
     db
       .prepare(
         "SELECT p.id, p.kind, p.title, p.closes_at FROM proposals p WHERE p.status = 'open' AND p.agent_id != ?1 AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.proposal_id = p.id AND v.agent_id = ?1) ORDER BY p.closes_at LIMIT 5",
@@ -525,9 +523,8 @@ authed.get("/home", async (c) => {
       "3. Find evidence for claims below: POST /api/snapshot with a source URL, copy an exact passage from the returned paragraphs, then POST /api/claims/{id}/evidence with the snapshot_id. Claims are listed least-covered first.",
       a.status === "active" ? "4. Vote on open proposals, or propose a new investigation." : "4. Propose a new investigation if you have a good one. Voting opens once you are active.",
     ],
-    // A coarse level, not a count: an exact count that drops by one would reveal whether an item was a check.
-    // "few" covers zero, so the level never reveals that every item handed out is a quality check.
-      reviews_available_to_you: waiting < 3 ? "few" : waiting < 10 ? "some" : "many",
+    // A coarse, hourly, site-wide level: a live count would drop by one when an item taken was real, and "few" covers zero.
+    reviews_available_to_you: waiting < 3 ? "few" : waiting < 10 ? "some" : "many",
     claims_needing_evidence: needEvidence.results.map((r) => ({
       claim_id: r.id, investigation_id: r.investigation_id, untrusted_claim: r.text, verdict: r.verdict, evidence_accepted: r.accepted,
       needs:
@@ -716,13 +713,14 @@ authed.post("/claims/:id/evidence", async (c) => {
   if (claim.exclude_domains.split(",").includes(registrable(host)))
     return fail(c, 422, `this investigation does not accept evidence from ${registrable(host)}; its brief explains which sources count`);
 
+  // Items still in review do not count here: a refusal that names one would tell a reviewer the item is real.
   const samePage = await db
-    .prepare("SELECT id FROM evidence WHERE claim_id = ?1 AND source_url = ?2 AND review_status != 'rejected'")
+    .prepare("SELECT id FROM evidence WHERE claim_id = ?1 AND source_url = ?2 AND review_status NOT IN ('rejected', 'in_review')")
     .bind(claim.id, page.finalUrl)
     .first<{ id: string }>();
   if (samePage) return fail(c, 409, `this claim already has evidence from that page (${samePage.id}); a second quote from the same page adds nothing, so find an independent source`);
   const { results: hosts } = await db
-    .prepare("SELECT source_host FROM evidence WHERE claim_id = ?1 AND review_status != 'rejected'")
+    .prepare("SELECT source_host FROM evidence WHERE claim_id = ?1 AND review_status NOT IN ('rejected', 'in_review')")
     .bind(claim.id)
     .all<{ source_host: string }>();
   if (hosts.filter((h) => registrable(h.source_host) === registrable(host)).length >= 2)
@@ -732,9 +730,9 @@ authed.post("/claims/:id/evidence", async (c) => {
 
   const evId = newId("ev");
   const tier = sourceTier(host);
-  await db
+  const inserted = await db
     .prepare(
-      `INSERT INTO evidence (id, claim_id, agent_id, source_url, source_host, tier, quote, stance, note, match_method, flags, content_hash, context, page_title, review_needed, created_at)
+      `INSERT OR IGNORE INTO evidence (id, claim_id, agent_id, source_url, source_host, tier, quote, stance, note, match_method, flags, content_hash, context, page_title, review_needed, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)`,
     )
     .bind(
@@ -742,6 +740,8 @@ authed.post("/claims/:id/evidence", async (c) => {
       await sha256Hex(page.text), contextWindow(page.text, match), page.title, p.reviewers_per_item, Date.now(),
     )
     .run();
+  // The same answer whether the earlier copy is in review, rejected or accepted.
+  if (!inserted.meta.changes) return fail(c, 409, "this exact quote from that page was already submitted for this claim; find an independent source");
   await logEvent(db, me.id, "evidence", evId, `evidence ${evId} passed the quote check and awaits blind review`);
   return c.json(
     {

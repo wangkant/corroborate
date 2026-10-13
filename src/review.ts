@@ -1,6 +1,7 @@
 import { goldStats, shownStats, type Agent } from "./env";
 import { FIXED, loadParams } from "./params";
 import { contextWindow } from "./fetcher";
+import { findSecret, injectionCheck } from "./sanitize";
 import { registrable, sourceTier } from "./tiers";
 import { logEvent, newId } from "./util";
 
@@ -32,9 +33,6 @@ interface ItemRow {
   source_url: string;
   page_title: string;
 }
-
-// Traps built from text that is never published, so no lookup can tell them from real items.
-const BLIND_KINDS = "'replay_rejected', 'unrelated_passage'";
 
 const NOT_MINE = `e.agent_id != ?1 AND a.net_hash != ?2 AND (a.owner IS NULL OR ?3 IS NULL OR a.owner != ?3)`;
 
@@ -68,30 +66,33 @@ export async function nextReview(db: D1Database, me: Agent, now = Date.now()): P
     const gold = await pickGold(db, me, first);
     if (gold) return assign(db, me, "gold", gold, now, params.review_minutes);
   }
-  return { none: await emptyReason(db, me, now) };
+  return { none: EMPTY_REASON };
 }
 
-// Says why the queue is empty, so agents can tell "nothing yet" from "nothing you may review".
-async function emptyReason(db: D1Database, me: Agent, now: number): Promise<string> {
-  const r = await db
+// No counts: the size of the real queue would tell an agent whether the items it gets are checks.
+const EMPTY_REASON =
+  "nothing for you to review right now. Items go only to reviewers independent of the submitter (another network and owner), each needs only a few reviewers, and you never get one twice; try again later.";
+
+// Items still short of reviewers across the site, as of the hourly refresh.
+export async function reviewQueue(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT value FROM cache WHERE key = 'review_queue'").first<{ value: string }>();
+  return Number(row?.value ?? 0);
+}
+
+export async function refreshReviewQueue(db: D1Database, now = Date.now()): Promise<number> {
+  const row = await db
     .prepare(
-      `SELECT COUNT(*) AS total,
-         SUM(e.agent_id = ?1) AS yours,
-         SUM(e.agent_id != ?1 AND (a.net_hash = ?2 OR (a.owner IS NOT NULL AND a.owner = ?3))) AS same_network_or_owner,
-         SUM(EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'evidence' AND s.item_id = e.id AND s.reviewer_id = ?1)) AS already_yours
-       FROM evidence e JOIN agents a ON a.id = e.agent_id WHERE e.review_status = 'in_review' AND e.status = 'visible'`,
+      `SELECT COUNT(*) AS n FROM evidence e WHERE e.review_status = 'in_review' AND e.status = 'visible'
+         AND (SELECT COUNT(*) FROM assignments s WHERE s.item_type = 'evidence' AND s.item_id = e.id AND (s.done_at IS NOT NULL OR s.due_at > ?1)) < e.review_needed`,
     )
-    .bind(me.id, me.net_hash, me.owner)
-    .first<{ total: number; yours: number | null; same_network_or_owner: number | null; already_yours: number | null }>();
-  const total = r?.total ?? 0;
-  if (!total) return "nothing is waiting for review anywhere right now; calibration items appear now and then, so come back later";
-  const taken = total - (r?.yours ?? 0) - (r?.same_network_or_owner ?? 0) - (r?.already_yours ?? 0);
-  return `${total} items are in review: ${r?.yours ?? 0} are yours, ${r?.same_network_or_owner ?? 0} come from your network or owner, ${r?.already_yours ?? 0} you already reviewed, and ${Math.max(0, taken)} already have enough reviewers assigned. Reviewers must be independent of the submitter, so try again when other agents have submitted.`;
-}
-
-export async function eligibleCount(db: D1Database, me: Agent, now = Date.now()): Promise<number> {
-  const { results } = await db.prepare(evidenceQuery).bind(me.id, me.net_hash, me.owner, now).all<{ taken: number; review_needed: number }>();
-  return results.filter((r) => r.taken < r.review_needed).length;
+    .bind(now)
+    .first<{ n: number }>();
+  const n = row?.n ?? 0;
+  await db
+    .prepare("INSERT INTO cache (key, value, updated_at) VALUES ('review_queue', ?1, ?2) ON CONFLICT (key) DO UPDATE SET value = ?1, updated_at = ?2")
+    .bind(String(n), now)
+    .run();
+  return n;
 }
 
 // Suspended reviewers' verdicts do not count, so their slots reopen.
@@ -117,8 +118,8 @@ async function pickEvidence(db: D1Database, me: Agent, now: number): Promise<str
 
 // A trap's right answer is "no" whatever the reviewer remembers, so anyone but the submitter may get one;
 // that keeps checks flowing in a community of three. Controls would be free points for people who
-// already judged the original, so they go only to fully independent reviewers. Other golds reuse public
-// accepted evidence and can be matched against it; blind kinds are built from text never published, so they go first.
+// already judged the original, so they go only to fully independent reviewers. Most golds reuse public
+// accepted evidence and can be matched against it; replays of unpublished rejected evidence cannot, so they go first.
 async function pickGold(db: D1Database, me: Agent, want: "control" | "trap"): Promise<string | null> {
   const independent =
     want === "control"
@@ -129,9 +130,9 @@ async function pickGold(db: D1Database, me: Agent, want: "control" | "trap"): Pr
       `SELECT g.id FROM golds g LEFT JOIN evidence e ON e.id = g.base_evidence_id JOIN agents a ON a.id = COALESCE(e.agent_id, g.author_id)
        WHERE (g.expected = 'yes') = ?4 ${independent}
          AND NOT EXISTS (SELECT 1 FROM assignments s WHERE s.item_type = 'gold' AND s.item_id = g.id AND s.reviewer_id = ?1)
-         AND (g.kind != 'unrelated_passage' OR (NOT EXISTS (SELECT 1 FROM evidence x WHERE x.source_url = g.source_url)
-           AND EXISTS (SELECT 1 FROM claims c2 JOIN investigations i2 ON i2.id = c2.investigation_id WHERE c2.id = g.claim_id AND c2.status = 'visible' AND i2.status = 'open')))
-       ORDER BY g.kind IN (${BLIND_KINDS}) DESC, RANDOM() LIMIT 1`,
+         AND (g.claim_id IS NULL OR EXISTS (SELECT 1 FROM claims c2 JOIN investigations i2 ON i2.id = c2.investigation_id WHERE c2.id = g.claim_id AND c2.status = 'visible' AND i2.status = 'open'))
+         AND (g.kind != 'unrelated_passage' OR NOT EXISTS (SELECT 1 FROM evidence x WHERE x.source_url = g.source_url))
+       ORDER BY g.kind = 'replay_rejected' DESC, RANDOM() LIMIT 1`,
     )
     .bind(me.id, me.net_hash, me.owner, want === "control" ? 1 : 0)
     .first<{ id: string }>();
@@ -218,8 +219,10 @@ export async function submitReview(
 // The payoff is lopsided on purpose: approving a trap costs four times what a correct answer earns,
 // so always-yes loses reputation, and failing a known-good control punishes always-no.
 async function scoreGold(db: D1Database, reviewerId: string, goldId: string, verdict: Verdict) {
-  const g = await db.prepare("SELECT expected FROM golds WHERE id = ?1").bind(goldId).first<{ expected: string }>();
+  const g = await db.prepare("SELECT expected, kind FROM golds WHERE id = ?1").bind(goldId).first<{ expected: string; kind: string }>();
   if (!g) return;
+  // An unrelated passage is recognisable by how unrelated it is, so getting one right earns nothing; approving one still costs.
+  if (g.kind === "unrelated_passage" && negative(verdict)) return;
   let sql: string;
   if (g.expected === "no") {
     if (negative(verdict)) sql = "traps_caught = traps_caught + 1, reputation = reputation + 1";
@@ -339,15 +342,20 @@ const GOLD_INSERT =
 async function makeGolds(db: D1Database, evidenceId: string, unanimous: boolean, now: number) {
   const ev = await db
     .prepare(
-      "SELECT e.id, e.claim_id, e.stance, e.quote, e.context, e.source_url, e.page_title, e.note, c.text AS claim_text FROM evidence e JOIN claims c ON c.id = e.claim_id WHERE e.id = ?1",
+      "SELECT e.id, e.claim_id, e.stance, e.quote, e.context, e.source_url, e.source_host, e.page_title, e.note, c.text AS claim_text FROM evidence e JOIN claims c ON c.id = e.claim_id WHERE e.id = ?1",
     )
     .bind(evidenceId)
-    .first<{ id: string; claim_id: string; stance: string; quote: string; context: string; source_url: string; page_title: string; note: string; claim_text: string }>();
+    .first<{ id: string; claim_id: string; stance: string; quote: string; context: string; source_url: string; source_host: string; page_title: string; note: string; claim_text: string }>();
   if (!ev) return;
-  const other = await db
-    .prepare("SELECT id, text FROM claims WHERE status = 'visible' AND investigation_id != (SELECT investigation_id FROM claims WHERE id = ?1) ORDER BY RANDOM() LIMIT 1")
+  const { results: others } = await db
+    .prepare(
+      `SELECT c.id, c.text, c.origin_url, i.exclude_domains FROM claims c JOIN investigations i ON i.id = c.investigation_id
+       WHERE c.status = 'visible' AND c.investigation_id != (SELECT investigation_id FROM claims WHERE id = ?1) ORDER BY RANDOM() LIMIT 10`,
+    )
     .bind(ev.claim_id)
-    .first<{ id: string; text: string }>();
+    .all<Candidate>();
+  const topic = topicKeys(`${ev.claim_text} ${ev.quote}`);
+  const [other] = await admissible(db, others.filter((o) => !shares(o.text, topic)), ev.source_url, ev.source_host);
   const flipped = ev.stance === "supports" ? "refutes" : "supports";
   const row = (kind: string, expected: string, claim: string, stance: string, claimId: string | null = null) =>
     db.prepare(GOLD_INSERT).bind(newId("gld"), ev.id, kind, expected, claim, stance, ev.quote, ev.context, ev.source_url, ev.page_title, ev.note, now, claimId);
@@ -369,56 +377,98 @@ async function makeReplayTrap(db: D1Database, evidenceId: string, now: number) {
     .run();
 }
 
-// Function words long enough to pass the length filter but too common to show two texts share a topic.
-const STOP = new Set(["about", "which", "there", "their", "these", "those", "other", "would", "could", "should", "being", "where", "while", "after", "before", "between", "under", "again", "every", "since", "until", "among", "within", "without", "through", "during", "against", "because", "around", "another", "first", "years"]);
-const words = (text: string) => new Set((text.toLowerCase().match(/[\p{L}\p{N}]{5,}/gu) ?? []).filter((w) => !STOP.has(w)));
+// Function words that would make two unrelated texts look like they share a topic.
+const STOP = new Set(["that", "this", "with", "from", "have", "were", "they", "been", "also", "into", "than", "then", "only", "more", "most", "such", "when", "what", "each", "some", "over", "will", "them", "here", "very", "about", "which", "there", "their", "these", "those", "other", "would", "could", "should", "being", "where", "while", "after", "before", "between", "under", "again", "every", "since", "until", "among", "within", "without", "through", "during", "against", "because", "around", "another", "first", "years"]);
+// Five-letter stems, so "boils" and "boiling" or "cause" and "causes" count as the same word.
+const topicKeys = (text: string) => new Set((text.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []).filter((w) => !STOP.has(w)).map((w) => w.slice(0, 5)));
+const shares = (text: string, keys: Set<string>) => [...topicKeys(text)].some((k) => keys.has(k));
 // Pages fetched to read a problem or a brief, not to cite.
 const NOT_SOURCES = ["erdosproblems.com", "github.com", "githubusercontent.com"];
 
-// A sentence from a page an agent read but never cited, shown under a claim it shares no words with. The right
-// answer is plainly "no", and nothing public ties the page or the sentence to this site, so no lookup gives it away.
-export async function makePassageTraps(db: D1Database, now = Date.now(), limit = 2): Promise<number> {
-  const have = await db.prepare("SELECT COUNT(*) AS n FROM golds WHERE kind = 'unrelated_passage'").first<{ n: number }>();
-  if ((have?.n ?? 0) >= 150) return 0;
+interface Candidate {
+  id: string;
+  text: string;
+  origin_url: string | null;
+  exclude_domains: string;
+}
+
+// The rules a real submission must meet, so a gold never shows a pairing the API would have refused.
+async function admissible(db: D1Database, claims: Candidate[], url: string, host: string): Promise<Candidate[]> {
+  const site = registrable(host);
+  const ok = claims.filter((c) => !c.exclude_domains.split(",").includes(site) && !(c.origin_url && registrable(new URL(c.origin_url).hostname) === site));
+  if (!ok.length) return [];
+  const { results } = await db
+    .prepare(`SELECT claim_id, source_url, source_host FROM evidence WHERE claim_id IN (${ok.map((_, i) => `?${i + 1}`).join(", ")}) AND review_status NOT IN ('rejected', 'in_review')`)
+    .bind(...ok.map((c) => c.id))
+    .all<{ claim_id: string; source_url: string; source_host: string }>();
+  return ok.filter((c) => {
+    const mine = results.filter((r) => r.claim_id === c.id);
+    return !mine.some((r) => r.source_url === url) && mine.filter((r) => registrable(r.source_host) === site).length < 2;
+  });
+}
+
+// A sentence from a primary source an agent read but never cited, under a claim it shares no words with. It only
+// catches agents that approve without reading: the mismatch is the giveaway, so a right answer earns nothing.
+export async function makePassageTraps(db: D1Database, now = Date.now()): Promise<number> {
+  const live = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM golds g WHERE g.kind = 'unrelated_passage' AND NOT EXISTS (SELECT 1 FROM evidence x WHERE x.source_url = g.source_url)
+         AND EXISTS (SELECT 1 FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = g.claim_id AND c.status = 'visible' AND i.status = 'open')`,
+    )
+    .first<{ n: number }>();
+  if ((live?.n ?? 0) >= 150) return 0;
+  // Each snapshot is looked at once, hours after its author moved on; a query string may carry an access token.
   const { results: snaps } = await db
     .prepare(
-      `SELECT s.agent_id, s.url, s.host, s.title, s.text FROM snapshots s
-       WHERE s.created_at < ?1 AND NOT EXISTS (SELECT 1 FROM evidence e WHERE e.source_url = s.url)
-         AND NOT EXISTS (SELECT 1 FROM golds g WHERE g.source_url = s.url)
-       GROUP BY s.url ORDER BY RANDOM() LIMIT ?2`,
+      `SELECT s.id, s.agent_id, s.url, s.host, s.title, s.created_at FROM snapshots s
+       WHERE s.created_at BETWEEN ?1 AND ?2 AND instr(s.url, '?') = 0
+         AND NOT EXISTS (SELECT 1 FROM evidence e WHERE e.source_url = s.url) AND NOT EXISTS (SELECT 1 FROM golds g WHERE g.source_url = s.url)
+       ORDER BY RANDOM() LIMIT 8`,
     )
-    .bind(now - 6 * 3_600_000, limit * 3)
-    .all<{ agent_id: string; url: string; host: string; title: string; text: string }>();
-  let made = 0;
-  for (const snap of snaps) {
-    if (made >= limit) break;
-    if (NOT_SOURCES.includes(registrable(snap.host))) continue;
-    const sentences = snap.text
-      .split("\n")
-      .flatMap((para) => para.split(/(?<=[.!?])\s+(?=[\p{Lu}])/u))
-      .map((t) => t.trim())
-      .filter((t) => t.length >= 60 && t.length <= 260 && t.split(/\s+/).length >= 10 && /^[\p{Lu}]/u.test(t) && /[.!?]$/.test(t));
-    if (!sentences.length) continue;
-    const quote = sentences[Math.floor(Math.random() * sentences.length)]!;
-    const start = snap.text.indexOf(quote);
-    if (start < 0) continue;
-    const context = contextWindow(snap.text, { method: "exact", start, end: start + quote.length });
-    const topic = words(`${snap.title} ${context}`);
-    const { results: claims } = await db
-      .prepare("SELECT c.id, c.text FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.status = 'visible' AND i.status = 'open' ORDER BY RANDOM() LIMIT 12")
-      .all<{ id: string; text: string }>();
-    const claim = claims.find((c) => ![...words(c.text)].some((w) => topic.has(w)));
-    if (!claim) continue;
-    await db
-      .prepare(
-        `INSERT INTO golds (id, base_evidence_id, kind, expected, claim_text, stance, quote, context, source_url, page_title, note, created_at, claim_id, author_id)
-         VALUES (?1, '', 'unrelated_passage', 'no', ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, ?9, ?10)`,
-      )
-      .bind(newId("gld"), claim.text, Math.random() < 0.8 ? "supports" : "refutes", quote, context, snap.url, snap.title, now, claim.id, snap.agent_id)
-      .run();
-    made++;
-  }
-  return made;
+    .bind(now - 7 * 3_600_000, now - 6 * 3_600_000)
+    .all<{ id: string; agent_id: string; url: string; host: string; title: string; created_at: number }>();
+  const snap = snaps.find((x) => sourceTier(x.host) === "primary" && !NOT_SOURCES.includes(registrable(x.host)) && !findSecret(`${x.url} ${x.title}`));
+  if (!snap) return 0;
+  const row = await db.prepare("SELECT substr(text, 1, 60000) AS text FROM snapshots WHERE id = ?1").bind(snap.id).first<{ text: string }>();
+  const text = row?.text ?? "";
+  const sentences = text
+    .slice(0, 50_000)
+    .split("\n")
+    .flatMap((para) => para.split(/(?<=[.!?])\s+(?=\p{Lu})/u))
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 60 && t.length <= 260 && t.split(/\s+/).length >= 10 && /^\p{Lu}/u.test(t) && /[.!?]$/.test(t) && /^[\x20-\x7e\u00a0-\u024f\u2013-\u201d]+$/.test(t));
+  const sentence = sentences[Math.floor(Math.random() * sentences.length)];
+  if (!sentence) return 0;
+  const start = text.indexOf(sentence);
+  const quote = sentence.replace(/\s+/g, " ");
+  const context = contextWindow(text, { method: "exact", start, end: start + sentence.length });
+  if (findSecret(`${quote} ${context}`) || injectionCheck(context).blocked) return 0;
+  // The author may have been reading for a claim in an investigation they worked on around then.
+  const { results: busy } = await db
+    .prepare(
+      `SELECT c.investigation_id AS id FROM evidence e JOIN claims c ON c.id = e.claim_id WHERE e.agent_id = ?1 AND e.created_at BETWEEN ?2 AND ?3
+       UNION SELECT investigation_id AS id FROM messages WHERE agent_id = ?1 AND created_at BETWEEN ?2 AND ?3 AND investigation_id IS NOT NULL`,
+    )
+    .bind(snap.agent_id, snap.created_at - 6 * 3_600_000, snap.created_at + 6 * 3_600_000)
+    .all<{ id: string }>();
+  const skip = new Set(busy.map((b) => b.id));
+  const { results: claims } = await db
+    .prepare(
+      `SELECT c.id, c.text, c.origin_url, c.investigation_id, i.exclude_domains FROM claims c JOIN investigations i ON i.id = c.investigation_id
+       WHERE c.status = 'visible' AND i.status = 'open' ORDER BY RANDOM() LIMIT 20`,
+    )
+    .all<Candidate & { investigation_id: string }>();
+  const topic = topicKeys(`${snap.title} ${context}`);
+  const [claim] = await admissible(db, claims.filter((c) => !skip.has(c.investigation_id) && !shares(c.text, topic)), snap.url, snap.host);
+  if (!claim) return 0;
+  await db
+    .prepare(
+      `INSERT INTO golds (id, base_evidence_id, kind, expected, claim_text, stance, quote, context, source_url, page_title, note, created_at, claim_id, author_id)
+       VALUES (?1, '', 'unrelated_passage', 'no', ?2, ?3, ?4, ?5, ?6, ?7, '', ?8, ?9, ?10)`,
+    )
+    .bind(newId("gld"), claim.text, Math.random() < 0.8 ? "supports" : "refutes", quote, context, snap.url, snap.title, now, claim.id, snap.agent_id)
+    .run();
+  return 1;
 }
 
 export async function refreshStatus(db: D1Database, agentId: string) {
@@ -427,15 +477,15 @@ export async function refreshStatus(db: D1Database, agentId: string) {
   const g = goldStats(a);
   const bad = g.total - g.good;
   const pct = FIXED.activate_min_accuracy_pct / 100;
-  // An agent that spots golds by matching public evidence, then approves everything else, still lets blind traps through.
+  // An agent that spots golds by matching public evidence, then approves everything else, still lets replays through.
   const replay = await db
     .prepare(
       `SELECT COUNT(*) AS seen, COALESCE(SUM(s.verdict IN ('yes', 'partly')), 0) AS passed FROM assignments s JOIN golds g ON g.id = s.item_id
-       WHERE s.item_type = 'gold' AND s.reviewer_id = ?1 AND s.done_at IS NOT NULL AND g.kind IN (${BLIND_KINDS})`,
+       WHERE s.item_type = 'gold' AND s.reviewer_id = ?1 AND s.done_at IS NOT NULL AND g.kind = 'replay_rejected'`,
     )
     .bind(agentId)
     .first<{ seen: number; passed: number }>();
-  const passesReplays = !replay || replay.seen < 2 || replay.passed * 2 <= replay.seen;
+  const passesReplays = !replay || replay.seen < 4 || replay.passed * 2 <= replay.seen;
   let next: Agent["status"] = a.status;
   if (bad >= FIXED.suspend_after_bad_golds && g.accuracy < 0.5) next = "suspended";
   else if (a.status === "active" && !passesReplays) next = "probation";

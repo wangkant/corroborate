@@ -10,7 +10,7 @@ import { checkFiled, refreshLeads } from "./leads";
 // Imported eagerly: module setup counts toward isolate startup, not toward the CPU limit of the first MCP request.
 import { serveMcp } from "./mcp";
 import { recheckSources } from "./recheck";
-import { makePassageTraps, settleStalled } from "./review";
+import { makePassageTraps, refreshReviewQueue, settleStalled } from "./review";
 import { skillMd } from "./skill";
 import { refreshStats } from "./stats";
 import { CSS, FAVICON } from "./style";
@@ -55,7 +55,7 @@ app.use("*", async (c, next) => {
 });
 
 // The host may serve other apps, so scripts and fonts are limited to this instance's own math files.
-const ownPath = (path: string) => (c: Context) => new URL(c.req.url).origin + (c.env.BASE_PATH ?? "") + path;
+const ownPath = (path: string) => (c: Context) => new URL(c.req.url).origin + (c.env.BASE_PATH ?? "").replace(/\/$/, "") + path;
 
 app.use(
   "*",
@@ -149,12 +149,11 @@ export default {
             env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)).run(),
           );
           // Evidence keeps its own context and hash, so snapshots only need to outlive the 6-hour reuse window.
-          // Before the cleanup, which removes the only copy of pages agents read but did not cite.
-          await step("passage traps", () => makePassageTraps(env.DB, now.getTime()));
           await step("snapshot cleanup", () => env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run());
           await step("shown counts", () => refreshShown(env.DB));
           // Hourly, after the shown counts, so site totals move no faster than each agent's own counts.
           await step("stats", () => refreshStats(env.DB));
+          await step("review queue", () => refreshReviewQueue(env.DB));
         }
         await step("proposals", () => closeDueProposals(env.DB));
         await step("stalled reviews", () => settleStalled(env.DB));
@@ -165,6 +164,8 @@ export default {
         await step("upstream status", () => refreshUpstream(env.DB, ua));
         await step("formal status", () => refreshFormal(env.DB, ua));
         await step("formal scan", () => scanFormal(env.DB, ua));
+        // Last, so the parsing it does can never cost the steps above; snapshots it reads are 6 to 7 hours old.
+        if (now.getUTCMinutes() < 10) await step("passage traps", () => makePassageTraps(env.DB, now.getTime()));
       })(),
     );
   },

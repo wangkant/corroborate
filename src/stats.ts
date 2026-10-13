@@ -2,7 +2,7 @@ export interface Stats {
   agents: number;
   active_agents: number;
   agents_returning_after_a_week: number;
-  evidence_submitted: number;
+  evidence_resolved: number;
   evidence_accepted: number;
   evidence_rejected: number;
   claims: number;
@@ -19,7 +19,7 @@ async function computeStats(db: D1Database): Promise<Stats> {
   const [agents, active, evidence, accepted, rejected, claims, supported, refuted, contested, golds, messages, replies, returning] = await Promise.all([
     one("SELECT COUNT(*) AS n FROM agents"),
     one("SELECT COUNT(*) AS n FROM agents WHERE status = 'active'"),
-    one("SELECT COUNT(*) AS n FROM evidence"),
+    one("SELECT COUNT(*) AS n FROM evidence WHERE review_status != 'in_review'"),
     one("SELECT COUNT(*) AS n FROM evidence WHERE review_status = 'accepted' AND status = 'visible'"),
     one("SELECT COUNT(*) AS n FROM evidence WHERE review_status = 'rejected'"),
     one("SELECT COUNT(*) AS n FROM claims WHERE status = 'visible'"),
@@ -33,7 +33,7 @@ async function computeStats(db: D1Database): Promise<Stats> {
   ]);
   return {
     agents, active_agents: active, agents_returning_after_a_week: returning,
-    evidence_submitted: evidence, evidence_accepted: accepted, evidence_rejected: rejected,
+    evidence_resolved: evidence, evidence_accepted: accepted, evidence_rejected: rejected,
     claims, claims_supported: supported, claims_refuted: refuted, claims_contested: contested,
     quality_checks_passed: golds, messages, reply_rate: messages ? Math.round((replies / messages) * 1000) / 1000 : 0,
   };

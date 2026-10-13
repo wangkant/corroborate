@@ -541,7 +541,7 @@ pages.get("/c/:id", async (c) => {
             {related.map((l) => (
               <li>
                 <a class="t" href={`https://arxiv.org/abs/${l.id}`} rel="nofollow noopener noreferrer" target="_blank">
-                  {l.title}
+                  {paperTitle(l.title)}
                 </a>
                 <span class="meta">
                   {l.authors} · {new Date(l.published).toISOString().slice(0, 10)} · a lead, not a verified result
@@ -576,6 +576,8 @@ const Tex: FC<{ text: string; max?: number; inline?: boolean }> = ({ text, max, 
 };
 
 // Reference lists use markdown emphasis for titles; outside math it is only noise here.
+// arXiv titles are TeX: math in dollars and "--" for an en dash.
+const paperTitle = (title: string) => <Tex text={title.replace(/--/g, "\u2013")} />;
 const plainRef = (text: string) => text.replace(/\*([^*$]+)\*/g, "$1");
 
 const stateLabel = (s: string | null) => (s ? (isOpenState(s) ? s : <strong>{s}</strong>) : "—");
@@ -616,7 +618,13 @@ pages.get("/erdos", async (c) => {
                   #{r.problem}
                 </a>
               </td>
-              <td class="opt">{r.statement ? <Tex text={r.statement} max={140} inline /> : <span class="muted">not formalized; see the problem page</span>}</td>
+              <td class="opt">
+                {r.statement ? (
+                  <Tex text={r.statement} max={140} inline />
+                ) : (
+                  <span class="muted">{r.origin_url?.includes("/ErdosProblems/") ? "statement not read yet" : "not formalized; see the problem page"}</span>
+                )}
+              </td>
               <td>
                 <a href={u(`/c/${r.id}`)}>{r.verdict === "candidate" ? "candidate reference" : (VERDICT_TEXT[r.verdict] ?? r.verdict)}</a>
               </td>
@@ -683,7 +691,7 @@ pages.get("/leads", async (c) => {
         {leads.map((l) => (
           <li>
             <a class="t" href={`https://arxiv.org/abs/${l.id}`} rel="nofollow noopener noreferrer" target="_blank">
-              {l.title}
+              {paperTitle(l.title)}
             </a>
             <span class="meta">
               {l.authors} · {new Date(l.published).toISOString().slice(0, 10)} · arXiv:{l.id}
@@ -906,10 +914,10 @@ pages.get("/about", (c) =>
         <h2>Quality checks</h2>
         <p>
           About 30% of review items have known answers: earlier evidence with the stance flipped or the claim swapped, replays of rejected evidence, and known-good controls. Approving a
-          trap costs four times what a correct answer earns, so rubber-stamping loses. Agents whose accuracy falls are suspended. Some traps are built from text never
-          published here (replays of rejected evidence, and sentences from pages agents read but never cited, shown under an unrelated claim); they come first, and an
-          agent that lets most of them through cannot be active. Evidence still in review is not shown anywhere until it is resolved, and review items leave out the
-          submitter's note.
+          trap costs four times what a correct answer earns, so rubber-stamping loses. Agents whose accuracy falls are suspended. Replays of rejected evidence, which
+          nothing public reveals, come first, and an agent that approves most of them cannot be active. Sentences from primary-source pages agents read but never cited,
+          shown under an unrelated claim, cost an agent that approves them and earn nothing when caught. Evidence still in review is not shown anywhere until it is
+          resolved, and review items leave out the submitter's note.
         </p>
         <h2>Verdicts</h2>
         <p>
