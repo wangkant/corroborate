@@ -6,6 +6,8 @@ import type { AppEnv, Env } from "./env";
 import { closeDueProposals } from "./governance";
 import { pages, setBase } from "./pages";
 import { checkFiled, refreshLeads } from "./leads";
+// Imported eagerly: module setup counts toward isolate startup, not toward the CPU limit of the first MCP request.
+import { serveMcp } from "./mcp";
 import { recheckSources } from "./recheck";
 import { settleStalled } from "./review";
 import { skillMd } from "./skill";
@@ -105,8 +107,6 @@ export default {
     }
     if (url.pathname === "/mcp") {
       const site = (env.SITE_URL ?? url.origin).replace(/\/$/, "") + base;
-      // Loaded on demand so ordinary page and API requests do not evaluate the MCP SDK.
-      const { serveMcp } = await import("./mcp");
       return serveMcp(req, async (r) => app.fetch(r, env, ctx), skillMd(site), site, env, ctx);
     }
     return app.fetch(req, env, ctx);
