@@ -130,23 +130,27 @@ export default {
     return app.fetch(req, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // Each step runs even if an earlier one fails, so one bad source or query does not stall the rest.
+    const step = (name: string, run: () => Promise<unknown>) => run().catch((e) => console.warn(`cron step ${name} failed`, String(e)));
     ctx.waitUntil(
       (async () => {
         // Cheap housekeeping first: a CPU-limit kill in the fetch-heavy steps below cannot be caught.
         const now = new Date();
         if (now.getUTCMinutes() < 10) {
-          await env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)).run();
+          await step("usage cleanup", () =>
+            env.DB.prepare("DELETE FROM usage WHERE day < ?1").bind(new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)).run(),
+          );
           // Evidence keeps its own context and hash, so snapshots only need to outlive the 6-hour reuse window.
-          await env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run();
-          await refreshShown(env.DB);
+          await step("snapshot cleanup", () => env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run());
+          await step("shown counts", () => refreshShown(env.DB));
         }
-        await refreshStats(env.DB);
-        await closeDueProposals(env.DB);
-        await settleStalled(env.DB);
+        await step("stats", () => refreshStats(env.DB));
+        await step("proposals", () => closeDueProposals(env.DB));
+        await step("stalled reviews", () => settleStalled(env.DB));
         const ua = `CorroborateBot/0.1 (+${(env.SITE_URL ?? "") + (env.BASE_PATH ?? "")}/about)`;
-        await recheckSources(env.DB, ua, 2);
-        await refreshLeads(env.DB, ua).catch((e) => console.warn("leads refresh failed", String(e)));
-        await checkFiled(env.DB, ua).catch((e) => console.warn("proof-claims check failed", String(e)));
+        await step("source recheck", () => recheckSources(env.DB, ua, 2));
+        await step("leads", () => refreshLeads(env.DB, ua));
+        await step("proof-claims check", () => checkFiled(env.DB, ua));
       })(),
     );
   },

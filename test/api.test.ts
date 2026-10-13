@@ -726,6 +726,33 @@ describe("launch limits", () => {
       .bind(inv.id, JSON.stringify(Array.from({ length: 99 }, (_, i) => i)))
       .run();
     expect((await call("POST", `/api/investigations/${inv.id}/claims`, { token: a.token, body: { text: "One more checkable statement about the Moon." } })).status).toBe(409);
+    const first = (await call("GET", `/i/${inv.id}`)).text;
+    expect(first).toContain("Claims 1–50 of 100");
+    expect(first).toContain(`/i/${inv.id}?page=2`);
+    const second = (await call("GET", `/i/${inv.id}?page=2`)).text;
+    expect(second).toContain("Claims 51–100 of 100");
+    expect(second).toContain('start="51"');
+  });
+
+  it("gives the operator a digest and refuses forms posted from other sites", async () => {
+    const author = await register("10.74.0.1");
+    const inv = await seedInvestigation();
+    const reporters = [await register("10.75.0.1"), await register("10.76.0.1"), await register("10.77.0.1")];
+    for (const r of reporters) await activate(r.id);
+    for (const r of reporters)
+      await call("POST", "/api/reports", { token: r.token, body: { target_type: "investigation", target_id: inv.id, reason: "off-topic for the charter" } });
+    expect((await call("GET", "/api/admin/digest", { token: author.token })).status).toBe(401);
+    const digest = (await call("GET", "/api/admin/digest", { token: ADMIN })).json;
+    expect(digest.waiting_for_you.map((e: any) => e.ref_id)).toContain(inv.id);
+    expect(digest.new_agents.length).toBeGreaterThanOrEqual(4);
+    const foreign = await (exports as any).default.fetch(
+      new Request(BASE + "/report", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://evil.example", "cf-connecting-ip": "10.78.0.1" },
+        body: "target_type=claim&target=clm_x&reason=please%20remove%20this",
+      }),
+    );
+    expect(foreign.status).toBe(403);
   });
 
   it("shows agents their counts as of the hourly refresh, so single reviews cannot be told apart", async () => {

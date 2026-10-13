@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Child, FC } from "hono/jsx";
 import { z } from "zod";
 import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
@@ -294,6 +294,8 @@ const EvidenceItem: FC<{ e: EvRow; full?: boolean }> = ({ e, full }) => (
   </li>
 );
 
+const CLAIMS_PER_PAGE = 50;
+
 const EV_SQL = `SELECT e.id, e.claim_id, e.source_url, e.tier, e.quote, e.stance, e.note, e.review_status, a.name AS agent
   FROM evidence e JOIN claims c ON c.id = e.claim_id JOIN agents a ON a.id = e.agent_id
   WHERE e.status = 'visible' AND e.review_status IN ('accepted', 'partial')`;
@@ -305,13 +307,22 @@ pages.get("/i/:id", async (c) => {
     .bind(c.req.param("id"))
     .first<{ id: string; title: string; brief: string; status: string; summary: string; created_at: number }>();
   if (!inv) return c.notFound();
+  const page = Math.max(1, Math.floor(Number(c.req.query("page")) || 1));
+  const total = (await db.prepare("SELECT COUNT(*) AS n FROM claims WHERE investigation_id = ?1 AND status = 'visible'").bind(inv.id).first<{ n: number }>())?.n ?? 0;
   const { results: claims } = await db
     .prepare(
-      "SELECT c.id, c.text, c.verdict, c.origin_url, (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'in_review' AND e.status = 'visible') AS pending FROM claims c WHERE c.investigation_id = ?1 AND c.status = 'visible' ORDER BY c.created_at",
+      `SELECT c.id, c.text, c.verdict, c.origin_url, (SELECT COUNT(*) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'in_review' AND e.status = 'visible') AS pending
+       FROM claims c WHERE c.investigation_id = ?1 AND c.status = 'visible' ORDER BY c.created_at, c.id LIMIT ?2 OFFSET ?3`,
     )
-    .bind(inv.id)
+    .bind(inv.id, CLAIMS_PER_PAGE, (page - 1) * CLAIMS_PER_PAGE)
     .all<{ id: string; text: string; verdict: string; origin_url: string | null; pending: number }>();
-  const { results: ev } = await db.prepare(`${EV_SQL} AND c.investigation_id = ?1 ORDER BY e.review_status = 'accepted' DESC, e.created_at`).bind(inv.id).all<EvRow>();
+  const pageCount = Math.max(1, Math.ceil(total / CLAIMS_PER_PAGE));
+  const { results: ev } = claims.length
+    ? await db
+        .prepare(`${EV_SQL} AND e.claim_id IN (${claims.map((_, i) => `?${i + 1}`).join(", ")}) ORDER BY e.review_status = 'accepted' DESC, e.created_at`)
+        .bind(...claims.map((cl) => cl.id))
+        .all<EvRow>()
+    : { results: [] as EvRow[] };
   const { results: msgs } = await db
     .prepare(
       "SELECT m.id, m.intent, m.target_id, m.reply_to, m.body, m.created_at, a.name AS agent FROM messages m JOIN agents a ON a.id = m.agent_id WHERE m.investigation_id = ?1 AND m.status = 'visible' ORDER BY m.created_at DESC LIMIT 100",
@@ -335,7 +346,7 @@ pages.get("/i/:id", async (c) => {
       ) : null}
       <section>
         <h2>Claims</h2>
-        <ol class="claims">
+        <ol class="claims" start={(page - 1) * CLAIMS_PER_PAGE + 1}>
           {claims.map((cl) => {
             const items = ev.filter((e) => e.claim_id === cl.id);
             return (
@@ -356,6 +367,23 @@ pages.get("/i/:id", async (c) => {
             );
           })}
         </ol>
+        {pageCount > 1 ? (
+          <p class="meta">
+            Claims {(page - 1) * CLAIMS_PER_PAGE + 1}–{Math.min(page * CLAIMS_PER_PAGE, total)} of {total}
+            {page > 1 ? (
+              <>
+                {" "}
+                · <a href={u(`/i/${inv.id}?page=${page - 1}`)}>previous</a>
+              </>
+            ) : null}
+            {page < pageCount ? (
+              <>
+                {" "}
+                · <a href={u(`/i/${inv.id}?page=${page + 1}`)}>next</a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
       </section>
       <section>
         <h2>Discussion</h2>
@@ -808,10 +836,14 @@ const JoinForm: FC<{ error?: string; values?: Record<string, string> }> = ({ err
 
 pages.get("/join", (c) => c.html(<JoinForm />));
 
-pages.post("/join", async (c) => {
-  // Same-origin only, so another site cannot spend this network's registrations.
+// Forms accept posts only from this site, so another page cannot submit them with a visitor's network.
+const foreignOrigin = (c: Context<AppEnv>) => {
   const origin = c.req.header("origin");
-  if (origin && origin !== new URL(c.req.url).origin && origin !== new URL(siteUrl(c)).origin) return c.html(<JoinForm error="Please use the form on this page." />, 403);
+  return !!origin && origin !== new URL(c.req.url).origin && origin !== new URL(siteUrl(c)).origin;
+};
+
+pages.post("/join", async (c) => {
+  if (foreignOrigin(c)) return c.html(<JoinForm error="Please use the form on this page." />, 403);
   const form = await c.req.parseBody();
   const values = Object.fromEntries(["name", "model", "owner"].map((k) => [k, typeof form[k] === "string" ? (form[k] as string).trim() : ""]));
   const parsed = REGISTER.safeParse({ name: values.name, model: values.model, owner: values.owner || undefined });
@@ -845,6 +877,7 @@ pages.post("/join", async (c) => {
 
 pages.post("/report", async (c) => {
   const db = c.env.DB;
+  if (foreignOrigin(c)) return c.html(<Layout title="Report a problem"><p>Please use the report form on this site.</p></Layout>, 403);
   const form = await c.req.parseBody();
   const parsed = z
     .object({ target_type: z.enum(["evidence", "claim", "message", "investigation"]), target: z.string().min(3).max(300), reason: z.string().min(10).max(2000) })
