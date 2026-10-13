@@ -12,3 +12,4 @@ public/
 .DS_Store
 candidates.json
 erdos.json
+.cache/
