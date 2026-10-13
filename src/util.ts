@@ -31,6 +31,20 @@ export function today(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10);
 }
 
+// Only parameters some route reads go into the key, so made-up query strings cannot force cache misses.
+const CACHE_PARAMS = ["page", "days", "limit", "linked", "status", "q", "investigation_id", "target_id", "since", "scope", "id"];
+
+export function cacheKey(url: string, base: string): string {
+  const u = new URL(url);
+  const kept = new URLSearchParams();
+  for (const k of CACHE_PARAMS) {
+    const v = u.searchParams.get(k);
+    if (v !== null) kept.set(k, v.slice(0, 200));
+  }
+  const qs = kept.toString();
+  return `${u.origin}${base}${u.pathname}${qs ? `?${qs}` : ""}`;
+}
+
 export const dailyLimitHit = (err: unknown) => /exceeded D1's free tier daily/i.test(err instanceof Error ? err.message : String(err));
 
 export const secondsToMidnightUtc = (now = Date.now()) => Math.ceil((86_400_000 - (now % 86_400_000)) / 1000);

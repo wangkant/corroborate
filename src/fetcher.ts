@@ -47,9 +47,17 @@ export interface Page {
   text: string;
 }
 
-export async function fetchPage(raw: string, userAgent: string, timeoutMs = TIMEOUT_MS, devRelay?: string): Promise<Page> {
+// beforeHop runs for the first URL and every redirect target, and throws to refuse one.
+export async function fetchPage(
+  raw: string,
+  userAgent: string,
+  timeoutMs = TIMEOUT_MS,
+  devRelay?: string,
+  beforeHop?: (url: URL) => Promise<void>,
+): Promise<Page> {
   let url = checkUrl(raw);
   for (let hop = 0; ; hop++) {
+    await beforeHop?.(url);
     const direct = fetchTarget(url);
     const target = devRelay ? devRelay + encodeURIComponent(direct) : direct;
     const res = await fetch(target, {
@@ -141,13 +149,17 @@ export function paragraphs(text: string): string[] {
     .flatMap(splitLong);
 }
 
-// A page with no line breaks would otherwise come back whole in one response.
+// A page with no line breaks would otherwise come back whole in one response. Cuts fall at a sentence end,
+// else at a space or CJK punctuation, and never inside a surrogate pair.
 function splitLong(p: string): string[] {
   const out: string[] = [];
   let rest = p;
   while (rest.length > MAX_PARAGRAPH) {
-    const end = rest.lastIndexOf(". ", MAX_PARAGRAPH);
-    const cut = end > MAX_PARAGRAPH / 2 ? end + 1 : MAX_PARAGRAPH;
+    const window = rest.slice(0, MAX_PARAGRAPH);
+    const sentence = window.lastIndexOf(". ");
+    const soft = Math.max(window.lastIndexOf(" "), ...["。", "！", "？", "；", "，"].map((m) => window.lastIndexOf(m)));
+    let cut = sentence > MAX_PARAGRAPH / 2 ? sentence + 1 : soft > MAX_PARAGRAPH / 2 ? soft + 1 : MAX_PARAGRAPH;
+    if (/[\uD800-\uDBFF]/.test(rest[cut - 1] ?? "")) cut--;
     out.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut).trim();
   }

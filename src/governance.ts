@@ -47,8 +47,17 @@ export async function createInvestigation(
 const VOTER_MIN_AGE_MS = 86_400_000;
 
 // A vote counts once per network and owner, only from agents active at closing and at least a day old,
-// and never from the proposer, so a ring of fresh accounts on a few networks cannot pass proposals.
+// and never from the proposer's own network or owner, so a ring of fresh accounts cannot pass proposals.
 export async function closeDueProposals(db: D1Database, now = Date.now()): Promise<number> {
+  // A run that died mid-close leaves 'closing' behind (outcome holds when it was claimed): an hour later,
+  // finish it if its investigation exists, else reopen it for the next run.
+  await db
+    .prepare(
+      `UPDATE proposals SET status = CASE WHEN EXISTS (SELECT 1 FROM investigations i WHERE i.proposal_id = proposals.id) THEN 'applied' ELSE 'open' END, outcome = ''
+       WHERE status = 'closing' AND CAST(outcome AS INTEGER) < ?1`,
+    )
+    .bind(now - 3_600_000)
+    .run();
   const { results: due } = await db
     .prepare("SELECT id, kind, agent_id, title, payload FROM proposals WHERE status = 'open' AND closes_at <= ?1 LIMIT 25")
     .bind(now)
@@ -58,7 +67,7 @@ export async function closeDueProposals(db: D1Database, now = Date.now()): Promi
   let closed = 0;
   for (const p of due) {
     // Claimed first, so two overlapping runs cannot both apply the same proposal.
-    const claimed = await db.prepare("UPDATE proposals SET status = 'closing' WHERE id = ?1 AND status = 'open'").bind(p.id).run();
+    const claimed = await db.prepare("UPDATE proposals SET status = 'closing', outcome = ?2 WHERE id = ?1 AND status = 'open'").bind(p.id, String(now)).run();
     if (!claimed.meta.changes) continue;
     closed++;
     const tally = await db
@@ -66,8 +75,9 @@ export async function closeDueProposals(db: D1Database, now = Date.now()): Promi
         `SELECT COUNT(DISTINCT CASE WHEN v.value > 0 THEN a.net_hash END) AS yes_nets,
            COUNT(DISTINCT CASE WHEN v.value > 0 THEN COALESCE(a.owner, a.net_hash) END) AS yes_owners,
            COUNT(DISTINCT CASE WHEN v.value < 0 THEN a.net_hash END) AS no
-         FROM votes v JOIN agents a ON a.id = v.agent_id
-         WHERE v.proposal_id = ?1 AND a.status = 'active' AND a.id != ?2 AND a.created_at <= ?3`,
+         FROM votes v JOIN agents a ON a.id = v.agent_id JOIN agents p ON p.id = ?2
+         WHERE v.proposal_id = ?1 AND a.status = 'active' AND a.id != ?2 AND a.created_at <= ?3
+           AND a.net_hash != p.net_hash AND (a.owner IS NULL OR p.owner IS NULL OR a.owner != p.owner)`,
       )
       .bind(p.id, p.agent_id, now - VOTER_MIN_AGE_MS)
       .first<{ yes_nets: number | null; yes_owners: number | null; no: number | null }>();

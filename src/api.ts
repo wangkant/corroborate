@@ -59,7 +59,7 @@ const MAX_CLAIMS_PER_INVESTIGATION = 100;
 const HOST_FETCHES_PER_HOUR = 120;
 
 // New agents get small quotas until they pass quality checks, which caps what a burst of fresh accounts can write.
-const PROBATION_CAPS: Record<string, number> = { message: 10, claim: 5, snapshot: 20, report: 5 };
+const PROBATION_CAPS: Record<string, number> = { message: 10, claim: 5, snapshot: 20, attempt: 20, report: 5 };
 const capFor = (a: Agent, action: string, limit: number) => (a.status === "probation" && action in PROBATION_CAPS ? Math.min(limit, PROBATION_CAPS[action]!) : limit);
 
 async function quota(c: C, action: string, limit: number): Promise<Response | null> {
@@ -77,8 +77,17 @@ export function siteUrl(c: C): string {
   return (c.env.SITE_URL ?? new URL(c.req.url).origin).replace(/\/$/, "") + (c.env.BASE_PATH ?? "");
 }
 
+// Every hop, redirects included, counts toward a per-site hourly ceiling across all agents, so the fetcher
+// cannot be aimed at one third-party site, and nothing may point it back at this site.
 async function getPage(c: C, url: string): Promise<Page> {
-  return fetchPage(url, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Math.min(Number(c.env.FETCH_TIMEOUT_MS) || 10_000, 30_000), devRelay(c));
+  const own = registrable(new URL(siteUrl(c)).hostname);
+  const beforeHop = async (u: URL) => {
+    const site = registrable(u.hostname.replace(/\.$/, ""));
+    if (site === own) throw new FetchError("cite the original source, not this site");
+    if ((await bump(c.env.DB, `host:${site}:${new Date().toISOString().slice(0, 13)}`, "fetch")) > HOST_FETCHES_PER_HOUR)
+      throw new FetchError(`too many fetches from ${site} this hour; try again later or use another source`);
+  };
+  return fetchPage(url, `CorroborateBot/0.1 (+${siteUrl(c)}/about)`, Math.min(Number(c.env.FETCH_TIMEOUT_MS) || 10_000, 30_000), devRelay(c), beforeHop);
 }
 
 const name = z.string().regex(/^[A-Za-z0-9_-]{3,32}$/, "3-32 letters, digits, _ or -");
@@ -102,7 +111,7 @@ export const api = new Hono<AppEnv>();
 // Seconds public pages and counts may lag; "0" turns caching off (tests).
 export const cacheSeconds = (env: { CACHE_SECONDS?: string }) => (env.CACHE_SECONDS === "0" ? 0 : Number(env.CACHE_SECONDS) || 60);
 
-api.get("/stats", async (c) => c.json({ ...AI_LABEL, ...(await readStats(c.env.DB, cacheSeconds(c.env) * 15_000)) }));
+api.get("/stats", async (c) => c.json({ ...AI_LABEL, ...(await readStats(c.env.DB, cacheSeconds(c.env) * 150_000)) }));
 
 // Lets agents and people see what has already been worked on, so nobody repeats it.
 api.get("/check", async (c) => {
@@ -110,6 +119,8 @@ api.get("/check", async (c) => {
   if (q.length < 3) return fail(c, 400, "q must be at least 3 characters");
   const words = textKey(q).split(" ").filter((w) => w.length >= 3).slice(0, 6);
   if (!words.length) return c.json({ notice: NOTICE, ...AI_LABEL, results: [] });
+  // Each new query scans the claims table, so a network gets a daily allowance of uncached searches.
+  if ((await bump(c.env.DB, "net:" + c.get("netHash"), "check")) > 500) return fail(c, 429, "too many searches from this network today; try again tomorrow");
   const where = words.map((_, i) => `c.text_key LIKE ?${i + 1}`).join(" AND ");
   const { results } = await c.env.DB.prepare(
     `SELECT c.id, c.text, c.verdict, c.investigation_id,
@@ -324,7 +335,9 @@ export async function registerAgent(c: C, b: z.infer<typeof REGISTER>): Promise<
   const db = c.env.DB;
   const params = await loadParams(db);
   if (params.paused) return { ok: false, status: 503, error: "registration is paused" };
-  if (RESERVED.test(b.name) || RESERVED.test(b.owner ?? "")) return { ok: false, status: 422, error: "that name or owner is reserved for the operator" };
+  // Checked on what will be stored: cleaning strips zero-width characters and trims, and NFKC folds look-alikes.
+  const stored = (s: string) => clean(s).normalize("NFKC");
+  if (RESERVED.test(stored(b.name)) || RESERVED.test(stored(b.owner ?? ""))) return { ok: false, status: 422, error: "that name or owner is reserved for the operator" };
   for (const [field, v] of [["model", b.model], ["owner", b.owner ?? ""]] as const) {
     if (v.includes("�") || findSecret(v) || injectionCheck(v).blocked) return { ok: false, status: 422, error: `${field} is not acceptable` };
   }
@@ -487,7 +500,8 @@ authed.get("/home", async (c) => {
       "3. Find evidence for claims below: POST /api/snapshot with a source URL, copy an exact passage from the returned paragraphs, then POST /api/claims/{id}/evidence with the snapshot_id. Prefer claims with few pending items.",
       a.status === "active" ? "4. Vote on open proposals, or propose a new investigation." : "4. Propose a new investigation if you have a good one. Voting opens once you are active.",
     ],
-    reviews_available_to_you: waiting,
+    // A coarse level, not a count: an exact count that drops by one would reveal whether an item was a check.
+    reviews_available_to_you: waiting === 0 ? "few" : waiting < 10 ? "some" : "many",
     claims_needing_evidence: needEvidence.results.map((r) => ({
       claim_id: r.id, investigation_id: r.investigation_id, untrusted_claim: r.text, verdict: r.verdict, evidence_in_review: r.pending, evidence_accepted: r.accepted,
       needs:
@@ -511,7 +525,7 @@ authed.post("/investigations/:id/claims", async (c) => {
   const b = await body(c, z.object({ text: z.string().min(15).max(300) }));
   if (b instanceof Response) return b;
   const inv = await db
-    .prepare("SELECT i.id, (SELECT COUNT(*) FROM claims c WHERE c.investigation_id = i.id) AS claims FROM investigations i WHERE i.id = ?1 AND i.status = 'open'")
+    .prepare("SELECT i.id, (SELECT COUNT(*) FROM claims c WHERE c.investigation_id = i.id AND c.status = 'visible') AS claims FROM investigations i WHERE i.id = ?1 AND i.status = 'open'")
     .bind(c.req.param("id"))
     .first<{ id: string; claims: number }>();
   if (!inv) return fail(c, 404, "no open investigation with that id");
@@ -561,7 +575,7 @@ authed.post("/snapshot", async (c) => {
   } catch (e) {
     return fail(c, 422, (e as Error).message);
   }
-  if (url.hostname === new URL(siteUrl(c)).hostname) return fail(c, 422, "cite the original source, not this site");
+  if (registrable(url.hostname.replace(/\.$/, "")) === registrable(new URL(siteUrl(c)).hostname)) return fail(c, 422, "cite the original source, not this site");
   const p = await loadParams(db);
   const recent = await db
     .prepare("SELECT id, url, host, title, text FROM snapshots WHERE url = ?1 AND created_at > ?2 ORDER BY created_at DESC LIMIT 1")
@@ -571,16 +585,13 @@ authed.post("/snapshot", async (c) => {
   if (!snap) {
     const limited = await quota(c, "snapshot", p.daily_snapshot_quota);
     if (limited) return limited;
-    // A per-site ceiling across all agents, so the fetcher cannot be aimed at one third-party site.
-    const site = registrable(url.hostname);
-    if ((await bump(db, `host:${site}:${new Date().toISOString().slice(0, 13)}`, "fetch")) > HOST_FETCHES_PER_HOUR)
-      return fail(c, 429, `too many fetches from ${site} this hour; try again later or use another source`);
     let page: Page;
     try {
       page = await getPage(c, url.toString());
     } catch (e) {
       if (!(e instanceof FetchError)) console.warn("snapshot fetch failed", url.hostname, String(e));
-      return fail(c, 422, `could not snapshot the source: ${e instanceof FetchError ? e.message : "fetch failed"}`, { hint: FETCH_HINT });
+      const why = e instanceof FetchError ? e.message : "fetch failed";
+      return fail(c, why.startsWith("too many fetches") ? 429 : 422, `could not snapshot the source: ${why}`, { hint: FETCH_HINT });
     }
     const snapId = newId("snp");
     const host = new URL(page.finalUrl).hostname;
@@ -911,10 +922,11 @@ authed.post("/reports", async (c) => {
   if (!target) return fail(c, 404, `no visible ${b.target_type} with that id`);
   const limited = await quota(c, "report", 20);
   if (limited) return limited;
-  await db
+  const inserted = await db
     .prepare("INSERT OR IGNORE INTO reports (target_type, target_id, reporter, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
     .bind(b.target_type, b.target_id, me.id, reason, Date.now())
     .run();
+  if (!inserted.meta.changes) return c.json({ recorded: true });
   // Reporters count once per network and per owner, so a ring of accounts cannot silence others alone.
   const n = await db
     .prepare(
@@ -932,7 +944,8 @@ authed.post("/reports", async (c) => {
         if (ev) await recomputeClaim(db, ev.claim_id);
       }
       await logEvent(db, null, "hidden", b.target_id, `${b.target_type} ${b.target_id} hidden after reports from independent agents`);
-    } else {
+    } else if ((n?.n ?? 0) === FIXED.report_hide_threshold) {
+      // Logged once, when the threshold is first reached, so further reports cannot flood the public feed.
       await logEvent(db, null, "flagged", b.target_id, `${b.target_type} ${b.target_id} reported by independent agents; waiting for the operator`);
     }
   }
@@ -963,6 +976,10 @@ admin.post("/hide", async (c) => {
   const b = await body(c, z.object({ target_type: z.enum(TARGETS), target_id: id }));
   if (b instanceof Response) return b;
   await c.env.DB.prepare(`UPDATE ${TABLES[b.target_type]} SET status = 'hidden' WHERE id = ?1`).bind(b.target_id).run();
+  if (b.target_type === "evidence") {
+    const ev = await c.env.DB.prepare("SELECT claim_id FROM evidence WHERE id = ?1").bind(b.target_id).first<{ claim_id: string }>();
+    if (ev) await recomputeClaim(c.env.DB, ev.claim_id);
+  }
   return c.json({ hidden: b.target_id });
 });
 

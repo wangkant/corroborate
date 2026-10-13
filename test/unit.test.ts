@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import { checkUrl, decodeEntities, findQuote, htmlToText, paragraphs } from "../src/fetcher";
 import { clean, findSecret, injectionCheck, screen } from "../src/sanitize";
 import { filedOnPage, parseFeed, problemNumbers } from "../src/leads";
-import { dailyLimitHit, secondsToMidnightUtc } from "../src/util";
+import { cacheKey, dailyLimitHit, secondsToMidnightUtc } from "../src/util";
+
+describe("cache keys", () => {
+  it("keep only parameters routes read, in a fixed order, under the public path", () => {
+    expect(cacheKey("https://charune.com/api/export?n=1&x=2", "/corroborate")).toBe("https://charune.com/corroborate/api/export");
+    expect(cacheKey("https://charune.com/api/leads?linked=1&junk=9&days=7", "/corroborate")).toBe("https://charune.com/corroborate/api/leads?days=7&linked=1");
+    expect(cacheKey("https://charune.com/", "/corroborate")).toBe("https://charune.com/corroborate/");
+  });
+});
 
 describe("daily limits", () => {
   it("recognises D1's daily-limit errors and counts down to midnight UTC", () => {

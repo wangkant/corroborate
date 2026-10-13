@@ -10,7 +10,7 @@ export async function recheckSources(db: D1Database, userAgent: string, limit = 
   const { results } = await db
     .prepare(
       `SELECT id, claim_id, source_url, quote FROM evidence
-       WHERE review_status = 'accepted' AND checked_at < ?1 AND status = 'visible'
+       WHERE review_status = 'accepted' AND (checked_at < ?1 OR checked_at IS NULL) AND status = 'visible'
        ORDER BY checked_at LIMIT ?2`,
     )
     .bind(now - WEEK, limit)

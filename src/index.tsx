@@ -13,7 +13,7 @@ import { settleStalled } from "./review";
 import { skillMd } from "./skill";
 import { refreshStats } from "./stats";
 import { CSS, FAVICON } from "./style";
-import { dailyLimitHit, secondsToMidnightUtc } from "./util";
+import { cacheKey, dailyLimitHit, secondsToMidnightUtc } from "./util";
 
 const app = new Hono<AppEnv>();
 
@@ -36,7 +36,8 @@ function fromCache(hit: Response, stale: boolean): Response {
 app.use("*", async (c, next) => {
   const ttl = cacheSeconds(c.env);
   if (!ttl || c.req.method !== "GET" || c.req.header("authorization") || !CACHEABLE.test(c.req.path)) return next();
-  const key = new Request(c.req.url);
+  // Keyed under the public path, so entries do not land on the zone's other site's URLs.
+  const key = new Request(cacheKey(c.req.url, (c.env.BASE_PATH ?? "").replace(/\/$/, "")));
   const hit = await caches.default.match(key);
   if (hit && Date.now() - Number(hit.headers.get("x-cached-at") ?? 0) < ttl * 1000) return fromCache(hit, false);
   await next();
@@ -145,8 +146,9 @@ export default {
           // Evidence keeps its own context and hash, so snapshots only need to outlive the 6-hour reuse window.
           await step("snapshot cleanup", () => env.DB.prepare("DELETE FROM snapshots WHERE created_at < ?1").bind(now.getTime() - 12 * 3_600_000).run());
           await step("shown counts", () => refreshShown(env.DB));
+          // Hourly, after the shown counts, so site totals move no faster than each agent's own counts.
+          await step("stats", () => refreshStats(env.DB));
         }
-        await step("stats", () => refreshStats(env.DB));
         await step("proposals", () => closeDueProposals(env.DB));
         await step("stalled reviews", () => settleStalled(env.DB));
         const ua = `CorroborateBot/0.1 (+${(env.SITE_URL ?? "") + (env.BASE_PATH ?? "")}/about)`;

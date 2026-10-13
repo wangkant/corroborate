@@ -107,6 +107,7 @@ beforeEach(async () => {
         { headers: { "content-type": "text/plain" } },
       );
     if (url === "https://www.erdosproblems.com/forum/thread/786/proof-claims") return html("<p>A proof claimed by D.&nbsp;Person (using a model).</p>");
+    if (url.startsWith("https://hop.example/moon")) return new Response(null, { status: 302, headers: { location: "https://science.nasa.gov/moon" } });
     if (url === "https://www.erdosproblems.com/forum/thread/900/proof-claims") return html("<p>There are 0 proof claims for this problem.</p>");
     if (url === "https://www.erdosproblems.com/forum/thread/81/proof-claims")
       return html("<p>A proof claimed by Jacobo Obinna Okechukwu Lin (using a model). Summary: ...</p><p>Comment: Obinna Okechukwu has a related paper.</p>");
@@ -744,6 +745,58 @@ describe("launch limits", () => {
     const second = (await call("GET", `/i/${inv.id}?page=2`)).text;
     expect(second).toContain("Claims 51–100 of 100");
     expect(second).toContain('start="51"');
+    await db().prepare("UPDATE claims SET status = 'hidden' WHERE id LIKE 'clm_fill%'").run();
+    expect((await call("POST", `/api/investigations/${inv.id}/claims`, { token: a.token, body: { text: "One more checkable statement about the Moon." } })).status).toBe(201);
+  });
+
+  it("does not count votes from the proposer's own network, and reopens proposals stuck while closing", async () => {
+    const proposer = await register("10.80.0.1");
+    const sibling = await register("10.80.0.2");
+    const others = [await register("10.81.0.1"), await register("10.82.0.1")];
+    const p = await call("POST", "/api/proposals", {
+      token: proposer.token,
+      body: { kind: "investigation", title: uniq("Check a benchmark table "), brief: "See whether the cited sources match the table.", claims: ["Table 3 reports 91.2% accuracy on the test split."] },
+    });
+    for (const v of [sibling, ...others]) {
+      await season(v.id);
+      await call("POST", `/api/proposals/${p.json.proposal_id}/vote`, { token: v.token, body: { vote: "yes" } });
+    }
+    await db().prepare("UPDATE proposals SET closes_at = 0 WHERE id = ?1").bind(p.json.proposal_id).run();
+    await closeDueProposals(db());
+    expect((await db().prepare("SELECT status, outcome FROM proposals WHERE id = ?1").bind(p.json.proposal_id).first<any>()).outcome).toMatch(/2 yes/);
+    const stuck = await call("POST", "/api/proposals", {
+      token: others[0]!.token,
+      body: { kind: "investigation", title: uniq("Check another benchmark table "), brief: "See whether the cited sources match the table.", claims: ["Table 4 reports 88.0% accuracy on the test split."] },
+    });
+    await db().prepare("UPDATE proposals SET status = 'closing', outcome = '1', closes_at = 0 WHERE id = ?1").bind(stuck.json.proposal_id).run();
+    await closeDueProposals(db());
+    expect((await db().prepare("SELECT status FROM proposals WHERE id = ?1").bind(stuck.json.proposal_id).first<any>()).status).toBe("failed");
+  });
+
+  it("charges redirect hops to the per-site cap and refuses look-alike operator owners", async () => {
+    const a = await register("10.83.0.1");
+    const hour = new Date().toISOString().slice(0, 13);
+    await db().prepare("INSERT INTO usage (subject, day, action, count) VALUES (?1, ?2, 'fetch', 120)").bind(`host:nasa.gov:${hour}`, hour.slice(0, 10)).run();
+    const viaRedirect = await call("POST", "/api/snapshot", { token: a.token, body: { url: "https://hop.example/moon" } });
+    expect(viaRedirect.status).toBe(429);
+    expect(viaRedirect.json.error).toMatch(/too many fetches from nasa.gov/);
+    expect((await call("POST", "/api/agents", { ip: "10.84.0.1", body: { name: "lookalike-two", model: "gpt-6", owner: "corroborate​-operator pilot" } })).status).toBe(422);
+    expect((await call("GET", "/api/home", { token: a.token })).json.reviews_available_to_you).toBe("few");
+  });
+
+  it("shows golds with their claim's current wording", async () => {
+    const author = await register("10.85.0.1");
+    const reviewer = await register("10.86.0.1");
+    const inv = await seedInvestigation();
+    const ev = await submit(author.token, inv.claims[0]!, "https://science.nasa.gov/moon", "The Moon is an average of 238,855 miles (384,400 km) away from Earth.");
+    await db()
+      .prepare("INSERT INTO golds (id, base_evidence_id, kind, expected, claim_text, stance, quote, context, source_url, page_title, note, created_at) VALUES ('gld_test', ?1, 'stance_flip', 'no', 'OLD WORDING', 'refutes', 'q', 'c', 'https://science.nasa.gov/moon', 't', '', 0)")
+      .bind(ev.json.evidence_id)
+      .run();
+    await db().prepare("UPDATE params SET value = 100 WHERE key = 'gold_rate_pct'").run();
+    const item = (await call("GET", "/api/reviews/next", { token: reviewer.token })).json.assignment;
+    expect(item.untrusted_claim).not.toBe("OLD WORDING");
+    expect(item.untrusted_claim).toContain("384,400");
   });
 
   it("gives the operator a digest and refuses forms posted from other sites", async () => {

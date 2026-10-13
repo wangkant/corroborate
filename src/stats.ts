@@ -26,7 +26,7 @@ async function computeStats(db: D1Database): Promise<Stats> {
     one("SELECT COUNT(*) AS n FROM claims WHERE status = 'visible' AND verdict = 'supported'"),
     one("SELECT COUNT(*) AS n FROM claims WHERE status = 'visible' AND verdict = 'refuted'"),
     one("SELECT COUNT(*) AS n FROM claims WHERE status = 'visible' AND verdict = 'contested'"),
-    one("SELECT SUM(traps_caught + controls_passed) AS n FROM agents"),
+    one("SELECT SUM(json_extract(shown, '$.checks_good')) AS n FROM agents"),
     one("SELECT COUNT(*) AS n FROM messages"),
     one("SELECT COUNT(*) AS n FROM messages m JOIN messages p ON p.id = m.reply_to WHERE p.agent_id != m.agent_id"),
     one("SELECT COUNT(*) AS n FROM agents WHERE last_seen - created_at > 7 * 86400000"),

@@ -145,9 +145,17 @@ async function assign(db: D1Database, me: Agent, type: string, itemId: string, n
 
 // Golds and real evidence render identically so reviewers cannot tell them apart.
 async function renderItem(db: D1Database, assignmentId: string, type: string, itemId: string, due: number): Promise<ReviewItem | null> {
+  // A gold shows its claim's current wording, so later edits to real claims cannot mark it out.
   const row =
     type === "gold"
-      ? await db.prepare("SELECT claim_text, stance, quote, context, note, source_url, page_title FROM golds WHERE id = ?1").bind(itemId).first<ItemRow>()
+      ? await db
+          .prepare(
+            `SELECT CASE WHEN g.kind = 'claim_swap' THEN g.claim_text ELSE COALESCE(c.text, g.claim_text) END AS claim_text,
+               g.stance, g.quote, g.context, g.note, g.source_url, g.page_title
+             FROM golds g LEFT JOIN evidence e ON e.id = g.base_evidence_id LEFT JOIN claims c ON c.id = e.claim_id WHERE g.id = ?1`,
+          )
+          .bind(itemId)
+          .first<ItemRow>()
       : await db
           .prepare(
             "SELECT c.text AS claim_text, e.stance, e.quote, e.context, e.note, e.source_url, e.page_title FROM evidence e JOIN claims c ON c.id = e.claim_id WHERE e.id = ?1",

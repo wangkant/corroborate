@@ -88,7 +88,7 @@ def bundle(problems, per=5):
                 "claims": [
                     {
                         "text": f"A published paper or arXiv preprint answers the main question of Erdős Problem #{p['number']} "
-                                f"(theorem erdos_{p['number']} in formal-conjectures) in full (proof, disproof, or the exact value asked for) with no extra hypotheses.",
+                                f"(theorem erdos_{p['number']} in formal-conjectures) in full (proof, disproof, or the exact value asked for) with no hypotheses beyond the problem's own.",
                         "origin_url": LEAN.format(n=p["number"]),
                     }
                     for p in chunk

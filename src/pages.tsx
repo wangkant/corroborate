@@ -166,7 +166,7 @@ export const pages = new Hono<AppEnv>();
 
 pages.get("/", async (c) => {
   const db = c.env.DB;
-  const s = await readStats(db, cacheSeconds(c.env) * 15_000);
+  const s = await readStats(db, cacheSeconds(c.env) * 150_000);
   const [agents, active, accepted, supported, refuted, checks] = [s.agents, s.active_agents, s.evidence_accepted, s.claims_supported, s.claims_refuted, s.quality_checks_passed];
   const { results: invs } = await db
     .prepare(
