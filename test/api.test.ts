@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { refreshShown } from "../src/env";
+import { refreshUpstream } from "../src/erdos";
 import { closeDueProposals } from "../src/governance";
 import { checkFiled } from "../src/leads";
 import { readStats, refreshStats } from "../src/stats";
@@ -333,6 +334,25 @@ describe("snapshots and the mechanical check", () => {
     expect((await match(b.token, "2609.20871", "2")).json.message).toMatch(/not listed as open/);
     expect((await match(a.token, "2609.20871", "abc")).status).toBe(400);
     expect((await match(a.token, "2601.00000", "5")).status).toBe(404);
+  });
+
+  it("notices when the problems database settles a problem that has a claim here", async () => {
+    await call("POST", "/api/admin/leads", { token: ADMIN });
+    const claimId = (await call("GET", "/api/leads?days=120")).json.leads.find((l: any) => l.id === "2609.37471").claims[0].claim_id;
+    expect(await refreshUpstream(db(), "test-ua", Date.now(), true)).toBe(0);
+    expect((await call("GET", `/api/claims/${claimId}`)).json.erdos_problem.database_state).toBe("open");
+    expect(await refreshUpstream(db(), "test-ua", Date.now())).toBeNull();
+    const spy = vi.mocked(globalThis.fetch);
+    const orig = spy.getMockImplementation()!;
+    spy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("problems.yaml")) return new Response('- number: "786"\n  informal_status:\n    state: "disproved"\n', { headers: { "content-type": "text/plain" } });
+      return orig(input, init);
+    });
+    expect(await refreshUpstream(db(), "test-ua", Date.now(), true)).toBe(1);
+    spy.mockImplementation(orig);
+    expect((await db().prepare("SELECT summary FROM events WHERE kind = 'upstream'").first<any>()).summary).toMatch(/problem #786 as disproved/);
+    expect((await call("GET", `/c/${claimId}`)).text).toContain("now lists");
   });
 
   it("lets the operator link a paper it has read, and says so in public", async () => {

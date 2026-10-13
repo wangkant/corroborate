@@ -1,4 +1,5 @@
 import { createInvestigation } from "./governance";
+import { logEvent } from "./util";
 
 // Shared with scripts/harvest_erdos.py; keep the wording and the pinned commit in step.
 export const LEAN_COMMIT = "34ee0e3c5fd52d202d62a71094a37970cb5fb870";
@@ -35,12 +36,55 @@ interface ProblemInfo {
 }
 
 function lookup(yaml: string, n: string): ProblemInfo | null {
-  const block = yaml.match(new RegExp(`\\n- number: "${n}"\\n([\\s\\S]*?)(?=\\n- number:|$)`))?.[1];
+  const block = ("\n" + yaml).match(new RegExp(`\\n- number: "${n}"\\n([\\s\\S]*?)(?=\\n- number:|$)`))?.[1];
   if (!block) return null;
   return {
     state: block.match(/informal_status:\n {4}state: "([^"]+)"/)?.[1] ?? "",
     formalized: block.match(/formalized:\n {4}state: "([^"]+)"/)?.[1] === "yes",
   };
+}
+
+export const isOpenState = (state: string) => OPEN_STATES.has(state);
+
+function allStates(yaml: string): Map<string, string> {
+  const out = new Map<string, string>();
+  // The file starts with its first entry, so a newline is added to split it like the rest.
+  for (const block of ("\n" + yaml).split('\n- number: "').slice(1)) {
+    const n = block.slice(0, block.indexOf('"'));
+    const state = block.match(/informal_status:\n {4}state: "([^"]+)"/)?.[1];
+    if (state) out.set(n, state);
+  }
+  return out;
+}
+
+// When the problem list marks a problem that has a claim here as settled, its maintainers have recorded a
+// result: the clearest outside check on whether a candidate reference held up.
+export async function refreshUpstream(db: D1Database, userAgent: string, now = Date.now(), force = false): Promise<number | null> {
+  const last = await db.prepare("SELECT value FROM params WHERE key = 'upstream_at'").first<{ value: number }>();
+  if (!force && last && now - last.value < 20 * 3_600_000) return null;
+  await db
+    .prepare("INSERT INTO params (key, value, updated_at, updated_by) VALUES ('upstream_at', ?1, ?1, 'cron') ON CONFLICT (key) DO UPDATE SET value = ?1, updated_at = ?1")
+    .bind(now)
+    .run();
+  const { results } = await db
+    .prepare("SELECT id, problem, upstream_state FROM claims WHERE problem IS NOT NULL AND status = 'visible'")
+    .all<{ id: string; problem: string; upstream_state: string | null }>();
+  if (!results.length) return 0;
+  const res = await fetch(DATA, { headers: { "user-agent": userAgent }, signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`problems database returned HTTP ${res.status}`);
+  const states = allStates(await res.text());
+  let settled = 0;
+  for (const cl of results) {
+    const state = states.get(cl.problem);
+    if (!state || state === cl.upstream_state) continue;
+    await db.prepare("UPDATE claims SET upstream_state = ?2, upstream_changed_at = ?3 WHERE id = ?1").bind(cl.id, state, now).run();
+    // The first reading only records the starting point; later changes to a settled state are news.
+    if (cl.upstream_state && !isOpenState(state)) {
+      settled++;
+      await logEvent(db, null, "upstream", cl.id, `the Erdős problems database now lists problem #${cl.problem} as ${state} (it was ${cl.upstream_state})`);
+    }
+  }
+  return settled;
 }
 
 async function rollingInvestigation(db: D1Database, now: number): Promise<string> {

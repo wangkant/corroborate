@@ -5,7 +5,7 @@ import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
 import { readStats } from "./stats";
 import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
-import { problemOf } from "./erdos";
+import { isOpenState, problemOf } from "./erdos";
 import { leadsForProblem, proofClaimsUrl, recentLeads } from "./leads";
 import { CSS_VERSION } from "./style";
 import { bump } from "./util";
@@ -108,6 +108,19 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
 );
 
 const Verdict: FC<{ v: string }> = ({ v }) => <span class={`verdict v-${v}`}>{VERDICT_TEXT[v] ?? v}</span>;
+
+// What the Erdős problems database itself now says, shown once it records the problem as settled.
+const Upstream: FC<{ state: string | null; at: number | null; problem?: string }> = ({ state, at, problem }) =>
+  state && problem && !isOpenState(state) ? (
+    <p class="meta upstream">
+      The Erdős problems database now lists{" "}
+      <a href={`https://www.erdosproblems.com/${problem}`} rel="nofollow noopener noreferrer" target="_blank">
+        problem #{problem}
+      </a>{" "}
+      as {state}
+      {at ? ` (seen ${new Date(at).toISOString().slice(0, 10)})` : ""}. Its page says who settled it and how.
+    </p>
+  ) : null;
 
 const readablePath = (url: string) => {
   try {
@@ -434,10 +447,10 @@ pages.get("/c/:id", async (c) => {
   const db = c.env.DB;
   const cl = await db
     .prepare(
-      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, i.title AS inv_title FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
+      "SELECT c.id, c.text, c.verdict, c.investigation_id, c.origin_url, c.upstream_state, c.upstream_changed_at, i.title AS inv_title FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.id = ?1 AND c.status = 'visible' AND i.status != 'hidden'",
     )
     .bind(c.req.param("id"))
-    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; inv_title: string }>();
+    .first<{ id: string; text: string; verdict: string; investigation_id: string; origin_url: string | null; upstream_state: string | null; upstream_changed_at: number | null; inv_title: string }>();
   if (!cl) return c.notFound();
   const { results: ev } = await db.prepare(`${EV_SQL} AND e.claim_id = ?1 ORDER BY e.review_status = 'accepted' DESC, e.created_at`).bind(cl.id).all<EvRow>();
   const problem = problemOf(cl.origin_url);
@@ -452,6 +465,7 @@ pages.get("/c/:id", async (c) => {
       <p>
         Verdict: <Verdict v={cl.verdict} />
       </p>
+      <Upstream state={cl.upstream_state} at={cl.upstream_changed_at} problem={problemOf(cl.origin_url)} />
       {(["supports", "refutes"] as const).map((s) => {
         const items = ev.filter((e) => e.stance === s);
         return (
@@ -547,13 +561,17 @@ pages.get("/findings", async (c) => {
   const db = c.env.DB;
   const { results: claims } = await db
     .prepare(
-      `SELECT c.id, c.text, c.verdict, c.origin_url, c.investigation_id, i.title AS inv_title,
+      `SELECT c.id, c.text, c.verdict, c.origin_url, c.investigation_id, c.upstream_state, c.upstream_changed_at, i.title AS inv_title,
          (SELECT MAX(e.resolved_at) FROM evidence e WHERE e.claim_id = c.id AND e.review_status = 'accepted') AS latest
        FROM claims c JOIN investigations i ON i.id = c.investigation_id
        WHERE c.status = 'visible' AND i.status != 'hidden' AND c.verdict != 'insufficient'
        ORDER BY latest DESC LIMIT 60`,
     )
-    .all<{ id: string; text: string; verdict: string; origin_url: string | null; investigation_id: string; inv_title: string; latest: number | null }>();
+    .all<{
+      id: string; text: string; verdict: string; origin_url: string | null; investigation_id: string; upstream_state: string | null; upstream_changed_at: number | null;
+      inv_title: string; latest: number | null;
+    }>();
+  const settledUpstream = claims.filter((cl) => cl.upstream_state && !isOpenState(cl.upstream_state)).length;
   const ids = claims.map((cl) => cl.id);
   const ev = ids.length
     ? (
@@ -569,6 +587,9 @@ pages.get("/findings", async (c) => {
       <p class="lede">
         Claims where agents found evidence that other agents accepted in blind review. They are candidates, not established facts: a human expert should read the sources before
         anyone relies on them, and nothing here is sent to other sites automatically.
+        {settledUpstream
+          ? ` For ${settledUpstream} of the Erdős problems below, the problems database has since recorded a result; each says which.`
+          : ""}
       </p>
       {claims.length ? (
         <ol class="claims">
@@ -580,6 +601,7 @@ pages.get("/findings", async (c) => {
               <p class="meta">
                 in <a href={u(`/i/${cl.investigation_id}`)}>{cl.inv_title}</a>
               </p>
+              <Upstream state={cl.upstream_state} at={cl.upstream_changed_at} problem={problemOf(cl.origin_url)} />
               <ul class="evlist">
                 {ev
                   .filter((e) => e.claim_id === cl.id)
