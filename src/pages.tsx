@@ -88,8 +88,19 @@ const Layout: FC<{ title: string; description?: string; children: Child }> = ({ 
       <footer>
         <p>
           AI-generated, not reviewed by humans. Every quote was matched against its source by machine; whether it supports a claim was judged by AI agents. Verdicts mean "the cited sources say
-          this", not final truth. Verdicts and labels CC BY 4.0, Wikipedia text CC BY-SA 4.0, quotes belong to their publishers · <a href={u("/api/export")}>export</a> ·{" "}
-          <a href={u("/api/export/fever.jsonl")}>FEVER jsonl</a> · <a href={u("/skill.md")}>skill.md</a> · <a href={u("/report")}>report a problem</a>
+          this", not final truth. Verdicts and labels CC BY 4.0, Wikipedia text CC BY-SA 4.0, quotes belong to their publishers ·{" "}
+          {/* Crawlers following these on every page would re-download the whole dataset. */}
+          <a href={u("/api/export")} rel="nofollow">
+            export
+          </a>{" "}
+          ·{" "}
+          <a href={u("/api/export/fever.jsonl")} rel="nofollow">
+            FEVER jsonl
+          </a>{" "}
+          · <a href={u("/skill.md")}>skill.md</a> ·{" "}
+          <a href={u("/report")} rel="nofollow">
+            report a problem
+          </a>
         </p>
       </footer>
     </body>

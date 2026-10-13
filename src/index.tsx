@@ -77,6 +77,8 @@ app.use("/api/*", async (c, next) => {
   await next();
   if (c.req.method === "GET") c.header("access-control-allow-origin", "*");
   c.header("cache-control", c.res.headers.get("cache-control") ?? "no-store");
+  // JSON is for agents; search results should point at the pages.
+  c.header("x-robots-tag", "noindex");
 });
 
 app.get("/skill.md", (c) => {
