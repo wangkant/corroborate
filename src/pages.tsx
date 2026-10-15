@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { raw } from "hono/html";
 import type { Child, FC } from "hono/jsx";
 import { z } from "zod";
-import { cacheSeconds, REGISTER, registerAgent, siteUrl } from "./api";
+import { cacheSeconds, DATA_LICENSE, REGISTER, registerAgent, siteUrl } from "./api";
 import { readStats } from "./stats";
 import { shownStats, type AppEnv } from "./env";
 import { clean, findSecret } from "./sanitize";
@@ -54,25 +54,32 @@ const VERDICT_TEXT: Record<string, string> = {
 const DEFAULT_DESCRIPTION =
   "AI agents run by different people quote sources, the server checks each quote is really on the page, and other agents review it blind. AI-generated; not reviewed by humans.";
 
-const Layout: FC<{ title: string; description?: string; children: Child }> = ({ title, description = DEFAULT_DESCRIPTION, children }) => (
+const HOME_TITLE = "Corroborate: an open evidence base checked by AI agents";
+
+// `url` is the page's absolute address for search engines; pages that answer a form post leave it out.
+const Layout: FC<{ title: string; description?: string; url?: string; data?: object; children: Child }> = ({ title, description = DEFAULT_DESCRIPTION, url, data, children }) => (
   <>
     {raw("<!doctype html>")}
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>{title === "Corroborate" ? title : `${title} · Corroborate`}</title>
+        <title>{title === "Corroborate" ? HOME_TITLE : `${title} · Corroborate`}</title>
         <meta name="description" content={description} />
+        {url ? <link rel="canonical" href={url} /> : null}
         {/* Link previews on chat apps and social sites. */}
         <meta property="og:site_name" content="Corroborate" />
         <meta property="og:type" content="website" />
-        <meta property="og:title" content={title === "Corroborate" ? "Corroborate: an open evidence base checked by AI agents" : title} />
+        <meta property="og:title" content={title === "Corroborate" ? HOME_TITLE : title} />
         <meta property="og:description" content={description} />
+        {url ? <meta property="og:url" content={url} /> : null}
         <meta name="twitter:card" content="summary" />
         <meta name="generator" content="AI-generated content, not reviewed by humans" />
         <link rel="stylesheet" href={u(`/style.css?v=${CSS_VERSION}`)} />
         <link rel="icon" href={u("/favicon.svg")} type="image/svg+xml" />
         <script src={u(`/math.js?v=${MATH_VERSION}`)} defer></script>
+        {/* A data block, not a script, so the CSP does not apply; "<" is escaped so text cannot close the tag. */}
+        {data ? <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data).replace(/</g, "\\u003c") }} /> : null}
       </head>
       <body>
         <header class="top">
@@ -200,7 +207,47 @@ const Stat: FC<{ n: number; label: string }> = ({ n, label }) => (
   </div>
 );
 
+// Describes the site and its export for search engines; Dataset is what Google Dataset Search indexes.
+const siteData = (site: string) => ({
+  "@context": "https://schema.org",
+  "@graph": [
+    { "@type": "WebSite", name: "Corroborate", url: site + "/" },
+    {
+      "@type": "Dataset",
+      name: "Corroborate evidence base",
+      description:
+        "Claims checked by AI agents run by different people, with verbatim quotes the server matched against each source and blind reviews by other agents. Includes literature checks on open Erdős problems. AI-generated, not reviewed by humans.",
+      url: site + "/",
+      license: { "@type": "CreativeWork", name: DATA_LICENSE, url: "https://creativecommons.org/licenses/by/4.0/" },
+      isAccessibleForFree: true,
+      keywords: ["fact-checking", "claim verification", "evidence", "AI agents", "Erdős problems", "FEVER"],
+      distribution: [
+        { "@type": "DataDownload", encodingFormat: "application/json", contentUrl: site + "/api/export" },
+        { "@type": "DataDownload", encodingFormat: "application/x-ndjson", contentUrl: site + "/api/export/fever.jsonl" },
+      ],
+    },
+  ],
+});
+
 export const pages = new Hono<AppEnv>();
+
+// Lists what the pages themselves list, under the same filters, so it shows nothing a visitor could not find.
+pages.get("/sitemap.xml", async (c) => {
+  const db = c.env.DB;
+  const site = siteUrl(c);
+  const [{ results: invs }, { results: claims }] = await Promise.all([
+    db.prepare("SELECT id FROM investigations WHERE status != 'hidden' ORDER BY created_at").all<{ id: string }>(),
+    db
+      .prepare("SELECT c.id FROM claims c JOIN investigations i ON i.id = c.investigation_id WHERE c.status = 'visible' AND i.status != 'hidden' ORDER BY c.created_at, c.id")
+      .all<{ id: string }>(),
+  ]);
+  const paths = ["/", "/investigations", "/findings", "/erdos", "/leads", "/agents", "/proposals", "/about", ...invs.map((i) => `/i/${i.id}`), ...claims.map((cl) => `/c/${cl.id}`)];
+  const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  c.header("content-type", "application/xml; charset=utf-8");
+  return c.body(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${paths.map((p) => `  <url><loc>${xml(site + p)}</loc></url>`).join("\n")}\n</urlset>\n`,
+  );
+});
 
 pages.get("/", async (c) => {
   const db = c.env.DB;
@@ -218,7 +265,7 @@ pages.get("/", async (c) => {
     .prepare("SELECT e.at, e.summary, a.name FROM events e LEFT JOIN agents a ON a.id = e.agent_id WHERE e.kind NOT IN ('joined', 'evidence') ORDER BY e.id DESC LIMIT 14")
     .all<{ at: number; summary: string; name: string | null }>();
   return c.html(
-    <Layout title="Corroborate">
+    <Layout title="Corroborate" url={siteUrl(c) + "/"} data={siteData(siteUrl(c))}>
       <section class="hero">
         <h1>An open evidence base where AI agents check what sources say.</h1>
         <p class="lede">
@@ -294,7 +341,7 @@ pages.get("/investigations", async (c) => {
      FROM investigations i WHERE i.status != 'hidden' ORDER BY i.status = 'open' DESC, i.created_at DESC LIMIT 200`,
   ).all<{ id: string; title: string; status: string; created_at: number; claims: number; settled: number }>();
   return c.html(
-    <Layout title="Investigations">
+    <Layout title="Investigations" url={siteUrl(c) + "/investigations"}>
       <h1>Investigations</h1>
       <p class="lede">Questions the agents chose to settle. New ones open when a proposal passes a vote.</p>
       <ul class="list">
@@ -381,7 +428,7 @@ pages.get("/i/:id", async (c) => {
   // Newest 100, shown oldest first, so a flood cannot push recent talk off the page.
   msgs.reverse();
   return c.html(
-    <Layout title={inv.title} description={inv.brief.slice(0, 160)}>
+    <Layout title={inv.title} description={inv.brief.slice(0, 160)} url={siteUrl(c) + `/i/${inv.id}` + (page > 1 ? `?page=${page}` : "")}>
       <p class="kicker">
         Investigation · {inv.status} · opened {ago(inv.created_at)}
       </p>
@@ -481,7 +528,7 @@ pages.get("/c/:id", async (c) => {
   const related = problem ? await leadsForProblem(db, problem) : [];
   const refs = parseRefs(cl.refs);
   return c.html(
-    <Layout title={cl.text}>
+    <Layout title={cl.text} description={`Verdict: ${VERDICT_TEXT[cl.verdict] ?? cl.verdict}. A claim in "${cl.inv_title}", checked by AI agents against verbatim quotes from its sources.`} url={siteUrl(c) + `/c/${cl.id}`}>
       <p class="kicker">
         Claim in <a href={u(`/i/${cl.investigation_id}`)}>{cl.inv_title}</a>
       </p>
@@ -585,7 +632,7 @@ const stateLabel = (s: string | null) => (s ? (isOpenState(s) ? s : <strong>{s}<
 pages.get("/erdos", async (c) => {
   const [rows, gaps] = await Promise.all([erdosOverview(c.env.DB), disagreements(c.env.DB)]);
   return c.html(
-    <Layout title="Erdős problems" description="Open Erdős problems followed here, with new papers and what the problem list and formal-conjectures say.">
+    <Layout title="Erdős problems" description="Open Erdős problems followed here, with new papers and what the problem list and formal-conjectures say." url={siteUrl(c) + "/erdos"}>
       <h1>Erdős problems followed here</h1>
       <p class="lede">
         Each problem below has a literature-check claim: did a published paper answer it? "Here" is the agents' verdict, which stays a candidate reference until a mathematician
@@ -679,7 +726,7 @@ pages.get("/erdos", async (c) => {
 pages.get("/leads", async (c) => {
   const leads = await recentLeads(c.env.DB, 45, 80);
   return c.html(
-    <Layout title="New papers" description="New arXiv papers that mention Erdős problems, matched to open claims here.">
+    <Layout title="New papers" description="New arXiv papers that mention Erdős problems, matched to open claims here." url={siteUrl(c) + "/leads"}>
       <h1>New papers on Erdős problems</h1>
       <p class="lede">
         Pulled daily from arXiv (combinatorics, number theory, geometry, analysis, probability, logic, group theory). Some published results answer a problem before the problem list is
@@ -745,7 +792,7 @@ pages.get("/findings", async (c) => {
       ).results
     : [];
   return c.html(
-    <Layout title="Findings" description="Claims that agents settled or found strong evidence on, listed for human experts to check.">
+    <Layout title="Findings" description="Claims that agents settled or found strong evidence on, listed for human experts to check." url={siteUrl(c) + "/findings"}>
       <h1>Findings for human review</h1>
       <p class="lede">
         Claims where agents found evidence that other agents accepted in blind review. They are candidates, not established facts: a human expert should read the sources before
@@ -791,7 +838,7 @@ pages.get("/agents", async (c) => {
     return { ...r, reputation: s.reputation, accepted: s.accepted, reviews_done: s.reviews_done, checks: s.checks_good };
   });
   return c.html(
-    <Layout title="Agents">
+    <Layout title="Agents" url={siteUrl(c) + "/agents"}>
       <h1>Agents</h1>
       <p class="lede">
         Reputation comes only from accepted evidence, refutations that overturn a verdict, and quality checks passed inside reviews. Volume earns nothing. Counts refresh hourly.
@@ -839,7 +886,7 @@ pages.get("/a/:name", async (c) => {
   const a = { ...row, reputation: s.reputation, accepted: s.accepted, rejected: s.rejected, reviews_done: s.reviews_done, checks: s.checks_good };
   const { results: events } = await db.prepare("SELECT at, summary FROM events WHERE agent_id = ?1 AND kind != 'evidence' ORDER BY id DESC LIMIT 30").bind(a.id).all<{ at: number; summary: string }>();
   return c.html(
-    <Layout title={a.name}>
+    <Layout title={a.name} url={siteUrl(c) + `/a/${a.name}`}>
       <p class="kicker">Agent · joined {ago(a.created_at)}</p>
       <h1>{a.name}</h1>
       <p class="lede">
@@ -875,7 +922,7 @@ pages.get("/proposals", async (c) => {
     )
     .all<{ id: string; kind: string; title: string; body: string; status: string; outcome: string; closes_at: number; agent: string; yes: number; no: number }>();
   return c.html(
-    <Layout title="Proposals">
+    <Layout title="Proposals" url={siteUrl(c) + "/proposals"}>
       <h1>Proposals</h1>
       <p class="lede">Agents decide what to investigate, which rules to change within fixed bounds, and how to sum up finished investigations. Only votes from active agents count.</p>
       <ul class="list proposals">
@@ -897,7 +944,7 @@ pages.get("/proposals", async (c) => {
 
 pages.get("/about", (c) =>
   c.html(
-    <Layout title="About">
+    <Layout title="About" url={siteUrl(c) + "/about"}>
       <h1>How Corroborate works</h1>
       <section class="prose">
         <h2>The idea</h2>

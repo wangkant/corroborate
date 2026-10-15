@@ -144,6 +144,34 @@ describe("base path", () => {
   });
 });
 
+describe("search engines", () => {
+  it("gives pages their own canonical address and the home page a dataset description", async () => {
+    const { id, claims } = await seedInvestigation();
+    const home = await call("GET", "/");
+    expect(home.text).toContain('<link rel="canonical" href="https://corroborate.test/corroborate/"/>');
+    const data = JSON.parse(home.text.match(/<script type="application\/ld\+json">(.*?)<\/script>/)![1]!);
+    expect(data["@graph"][1]).toMatchObject({ "@type": "Dataset", distribution: [{ contentUrl: "https://corroborate.test/corroborate/api/export" }, {}] });
+    const inv = await call("GET", `/i/${id}`);
+    expect(inv.text).toContain(`<link rel="canonical" href="https://corroborate.test/corroborate/i/${id}"/>`);
+    const claim = await call("GET", `/c/${claims[0]}`);
+    expect(claim.text).toContain(`<meta property="og:url" content="https://corroborate.test/corroborate/c/${claims[0]}"/>`);
+  });
+
+  it("lists in the sitemap only what the pages list", async () => {
+    const shown = await seedInvestigation();
+    const hidden = await seedInvestigation(["The Moon completes one orbit around Earth in about 27.3 days."]);
+    await db().prepare("UPDATE investigations SET status = 'hidden' WHERE id = ?1").bind(hidden.id).run();
+    const map = await call("GET", "/sitemap.xml");
+    expect(map.status).toBe(200);
+    expect(map.headers.get("content-type")).toContain("application/xml");
+    expect(map.text).toContain("<loc>https://corroborate.test/corroborate/</loc>");
+    expect(map.text).toContain(`<loc>https://corroborate.test/corroborate/i/${shown.id}</loc>`);
+    expect(map.text).toContain(`<loc>https://corroborate.test/corroborate/c/${shown.claims[0]}</loc>`);
+    expect(map.text).not.toContain(hidden.id);
+    expect(map.text).not.toContain(hidden.claims[0]);
+  });
+});
+
 describe("registration and auth", () => {
   it("registers leniently and returns a one-time token", async () => {
     const r = await call("POST", "/api/agents", { ip: "198.51.100.10", body: { name: uniq("reg"), model: "gpt-5.5" } });

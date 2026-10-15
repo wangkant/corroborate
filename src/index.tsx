@@ -22,7 +22,7 @@ const app = new Hono<AppEnv>();
 // worker, so this saves D1 reads and CPU, not request quota. Copies are kept for a day so that, if the
 // database fails (for example at its daily limit), readers get the last good page instead of an error.
 const CACHEABLE =
-  /^\/(?:|investigations|findings|erdos|leads|agents|proposals|about|join|report|[ica]\/[\w.-]+|api\/(?:stats|investigations(?:\/[\w-]+)?|claims\/[\w-]+|erdos|leads|messages|proposals|params|check|export|export\/fever\.jsonl))$/;
+  /^\/(?:|investigations|findings|erdos|leads|agents|proposals|about|join|report|sitemap\.xml|[ica]\/[\w.-]+|api\/(?:stats|investigations(?:\/[\w-]+)?|claims\/[\w-]+|erdos|leads|messages|proposals|params|check|export|export\/fever\.jsonl))$/;
 const KEEP_SECONDS = 86_400;
 
 // The zone's browser-cache TTL rewrites cached headers to hours; browsers should still ask again.
