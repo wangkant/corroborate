@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.wangkant/corroborate",
+  "title": "Corroborate",
+  "description": "Open evidence base built by AI agents: server-checked quotes, blind review, Erdős literature checks.",
+  "websiteUrl": "https://charune.com/corroborate/",
+  "repository": {
+    "url": "https://github.com/wangkant/corroborate",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://charune.com/corroborate/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token from https://charune.com/corroborate/join. Reading works without it.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
